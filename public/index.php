@@ -323,7 +323,7 @@
 <script>
   (() => {
     // ====== CONFIG ======
-    const API_BASE = '/Project_Q/public/api/esp32'; // chỉnh 1 lần ở đây
+    const API_BASE = 'http://localhost:5000/api'; // Python Flask API
     const SEL = s => document.querySelector(s);
     const ipEl = SEL('#esp_ip');
     const imgEl = SEL('#cam');
@@ -515,10 +515,10 @@
           let apiUrl;
           if (trackingMode === 'yellow') {
             // API SIÊU NHANH - Haar Cascade
-            apiUrl = `/Project_Q/public/api/face_detect_fast.php?ip=${encodeURIComponent(ip)}`;
+            apiUrl = `${API_BASE}/face-detect-fast?ip=${encodeURIComponent(ip)}`;
           } else {
             // API đầy đủ với recognition
-            apiUrl = `/Project_Q/public/api/face_check.php?ip=${encodeURIComponent(ip)}`;
+            apiUrl = `${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`;
           }
 
           const faceRes = await fetchJsonSafe(apiUrl);
@@ -654,7 +654,7 @@
         imgEl.src = capUrl(ip);
         setStatus('CAPTURING…', 'warn');
 
-        const j = await fetchJsonSafe(`${API_BASE}/capture.php?ip=${encodeURIComponent(ip)}`);
+        const j = await fetchJsonSafe(`${API_BASE}/esp32/capture?ip=${encodeURIComponent(ip)}`);
         if (j.ok && j.url) {
           imgEl.src = j.url; // xem ảnh đã lưu
           setTimeout(reloadCam, 1200); // quay lại stream sau 1.2s
@@ -674,7 +674,7 @@
     async function ctrl(v, val) {
       try {
         const ip = getIP();
-        await fetch(`${API_BASE}/ctrl.php?ip=${encodeURIComponent(ip)}&var=${encodeURIComponent(v)}&val=${encodeURIComponent(val)}`).catch(() => {});
+        await fetch(`${API_BASE}/esp32/ctrl?ip=${encodeURIComponent(ip)}&var=${encodeURIComponent(v)}&val=${encodeURIComponent(val)}`).catch(() => {});
         setStatus(`${v}=${val}`, 'ok');
       } catch {
         /* ignore UI toast đã có nơi khác */
@@ -707,7 +707,7 @@
         setStatus('DETECTING…', 'warn');
 
         // Bước 1: Gọi API nhận diện
-        const faceRes = await fetchJsonSafe(`/Project_Q/public/api/face_check.php?ip=${encodeURIComponent(ip)}`);
+        const faceRes = await fetchJsonSafe(`${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`);
 
         if (!faceRes.ok) {
           toast('Lỗi nhận diện: ' + (faceRes.error || 'Unknown'));
@@ -726,12 +726,12 @@
         }
 
         // Bước 2: Lấy ảnh gốc
-        const imgRes = await fetch(`/Project_Q/public/api/esp32_capture.php?ip=${encodeURIComponent(ip)}`);
+        const imgRes = await fetch(`${API_BASE}/esp32-capture?ip=${encodeURIComponent(ip)}`);
         const imgBlob = await imgRes.blob();
 
         // Bước 3: Vẽ khung lên ảnh
         const boxesParam = encodeURIComponent(JSON.stringify(faceRes));
-        const overlayRes = await fetch(`/Project_Q/public/api/draw_overlay.php?boxes=${boxesParam}`, {
+        const overlayRes = await fetch(`${API_BASE}/draw-overlay?boxes=${boxesParam}`, {
           method: 'POST',
           body: imgBlob,
           headers: {
@@ -809,8 +809,7 @@
 
       autoBusy = true;
       const thr = Math.max(0, Math.min(100, parseFloat(autoThr.value || '7.5')));
-      const endpoint = useSimple ? 'auto_capture_simple.php' : 'auto_capture.php';
-      const url = `${API_BASE}/${endpoint}?ip=${encodeURIComponent(ip)}&thr=${thr}&delay=300&full=1`;
+      const url = `${API_BASE}/esp32/auto-capture?ip=${encodeURIComponent(ip)}&thr=${thr}&delay=300&full=1`;
 
       try {
         const j = await fetchJsonSafe(url);

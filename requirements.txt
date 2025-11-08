@@ -1,0 +1,20 @@
+# Project_Q Python Backend Requirements
+
+# Web Framework
+Flask==3.0.0
+flask-cors==4.0.0
+
+# Database
+mysql-connector-python==8.2.0
+
+# Image Processing
+Pillow==10.1.0
+
+# HTTP Requests
+requests==2.31.0
+
+# Face Recognition (already in tool/requirements.txt)
+# opencv-python
+# face-recognition
+# dlib
+# numpy

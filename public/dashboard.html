@@ -1,0 +1,49 @@
+<section class="panel">
+  <h2>Camera ESP32-CAM</h2>
+  <div style="margin-bottom: 8px">
+    <input id="esp_ip" value="192.168.0.107" />
+    <button onclick="reloadCam()">Load stream</button>
+    <button onclick="capture()">📸 Capture</button>
+  </div>
+  <img
+    id="cam"
+    style="max-width: 100%; border: 1px solid #ccc; border-radius: 8px"
+  />
+  <div style="margin-top: 8px">
+    <button onclick="ctrl('brightness',1)">Brightness +</button>
+    <button onclick="ctrl('brightness',-1)">Brightness -</button>
+    <button onclick="ctrl('led_intensity',128)">LED 128</button>
+    <button onclick="ctrl('face_detect',1)">Face Detect ON</button>
+    <button onclick="ctrl('face_recognize',1)">Face Recog ON</button>
+    <button onclick="ctrl('face_enroll',1)">Enroll Face</button>
+  </div>
+</section>
+
+<script>
+  const camEl = document.getElementById("cam");
+  const ipEl = document.getElementById("esp_ip");
+
+  function reloadCam() {
+    const ip = encodeURIComponent(ipEl.value.trim());
+    camEl.src = `/api/esp32/stream?ip=${ip}`;
+  }
+  async function capture() {
+    const ip = encodeURIComponent(ipEl.value.trim());
+    const r = await fetch(`/api/esp32/capture?ip=${ip}`, { cache: "no-store" });
+    const b = await r.blob();
+    const url = URL.createObjectURL(b);
+    camEl.src = url; // hiện ảnh chụp
+    setTimeout(reloadCam, 1200); // quay về live stream
+  }
+  function ctrl(v, val) {
+    const ip = encodeURIComponent(ipEl.value.trim());
+    fetch(
+      `/api/esp32/ctrl?ip=${ip}&var=${encodeURIComponent(
+        v
+      )}&val=${encodeURIComponent(val)}`
+    ).catch(() => {});
+  }
+
+  // Tự load lúc mở trang
+  reloadCam();
+</script>

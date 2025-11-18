@@ -277,12 +277,26 @@ def face_check():
         ]
         
         # Execute Python script
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=APP_CONFIG['python_timeout']
-        )
+        print(f"[DEBUG] Running command: {' '.join(cmd)}")
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=APP_CONFIG['python_timeout']
+            )
+            
+            print(f"[DEBUG] Return code: {result.returncode}")
+            print(f"[DEBUG] Stdout length: {len(result.stdout)}")
+            print(f"[DEBUG] Stderr: {result.stderr[:200] if result.stderr else 'None'}")
+            
+        except subprocess.TimeoutExpired as e:
+            os.unlink(tmp_file.name)
+            return error_response(f'Python script timeout after {APP_CONFIG["python_timeout"]}s', 500)
+        except Exception as e:
+            os.unlink(tmp_file.name)
+            return error_response(f'Subprocess error: {str(e)}', 500)
         
         # Clean up temp file
         os.unlink(tmp_file.name)
@@ -428,9 +442,8 @@ def draw_overlay():
         return error_response(f'Draw error: {str(e)}', 500)
 
 @app.route('/api/logs', methods=['GET'])
-@require_api_key
 def get_logs():
-    """Get access logs"""
+    """Get access logs - Public endpoint for frontend polling"""
     limit = int(request.args.get('limit', 100))
     
     logs = execute_query(
@@ -439,23 +452,238 @@ def get_logs():
         fetch_all=True
     )
     
-    return json_response({'data': logs})
+    return json_response({'ok': True, 'data': logs})
+
+@app.route('/api/logs', methods=['POST'])
+def create_log():
+    """Create log entry from ESP32 - Public endpoint"""
+    data = request.get_json() or request.form.to_dict()
+    
+    status = data.get('status', 'unknown')
+    recognized_name = data.get('recognized_name', 'Unknown')
+    confidence = float(data.get('confidence', 0))
+    source = data.get('source', 'esp32_auto')
+    device_id = data.get('device_id', 1)
+    
+    try:
+        execute_query(
+            '''INSERT INTO access_logs 
+               (device_id, status, recognized_name, confidence, source, timestamp) 
+               VALUES (%s, %s, %s, %s, %s, NOW())''',
+            (device_id, status, recognized_name, confidence, source)
+        )
+        
+        return success_response({'message': 'Log saved', 'status': status})
+    except Exception as e:
+        return error_response(f'Failed to save log: {str(e)}', 500)
+
+@app.route('/api/sensor/config', methods=['GET'])
+@require_api_key
+def get_sensor_config():
+    """Get LM393 sensor configuration"""
+    config = {
+        'lm393_enabled': APP_CONFIG.get('lm393_enabled', True),
+        'lm393_cooldown_ms': APP_CONFIG.get('lm393_cooldown_ms', 5000),
+        'save_unlock_photos': APP_CONFIG.get('save_unlock_photos', True),
+        'tolerance': APP_CONFIG.get('tolerance', 0.6)
+    }
+    
+    return json_response({'config': config})
+
+@app.route('/api/sensor/stats', methods=['GET'])
+@require_api_key
+def get_sensor_stats():
+    """Get sensor statistics from database"""
+    # Statistics for last 24 hours
+    stats = execute_query('''
+        SELECT 
+            COUNT(*) as total_detections,
+            SUM(CASE WHEN status = 'granted' THEN 1 ELSE 0 END) as granted,
+            SUM(CASE WHEN status = 'denied' THEN 1 ELSE 0 END) as denied,
+            AVG(confidence) as avg_confidence
+        FROM access_logs 
+        WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 24 HOUR)
+    ''', fetch_one=True)
+    
+    # Recent detections
+    recent = execute_query('''
+        SELECT id, device_id, recognized_name, confidence, status, photo_url, timestamp
+        FROM access_logs 
+        ORDER BY timestamp DESC 
+        LIMIT 10
+    ''', fetch_all=True)
+    
+    return json_response({
+        'stats': stats,
+        'recent_detections': recent
+    })
+
+@app.route('/api/sensor-status', methods=['GET'])
+def get_sensor_status_realtime():
+    """Get realtime sensor status from ESP32"""
+    try:
+        ip = get_esp_ip()
+        
+        # Try to get sensor status from ESP32
+        try:
+            url = f"http://{ip}/sensor"
+            response = requests.get(url, timeout=1)
+            
+            if response.status_code == 200:
+                # Parse JSON response from ESP32
+                data = response.json()
+                return success_response({
+                    'detected': data.get('detected', False),
+                    'value': data.get('value', 0),
+                    'timestamp': data.get('timestamp', '')
+                })
+        except:
+            # ESP32 endpoint not available, return default
+            pass
+        
+        # Default response when ESP32 doesn't have /sensor endpoint
+        return success_response({
+            'detected': False,
+            'value': 0,
+            'note': 'ESP32 sensor endpoint not available'
+        })
+        
+    except Exception as e:
+        return error_response(f'Sensor check error: {str(e)}', 500)
 
 @app.route('/api/access-log', methods=['POST'])
 def create_access_log():
-    """Create access log entry"""
+    """Create access log entry - for manual face check from web"""
     data = request.get_json() or request.form.to_dict()
     
-    device_id = data.get('device_id')
+    device_id = data.get('device_id', 1)
     status = data.get('status', 'unknown')
     photo_url = data.get('photo_url')
+    recognized_name = data.get('recognized_name')
+    confidence = data.get('confidence', 0)
+    # Force web_manual for this endpoint (manual checks from web interface)
+    source = 'web_manual'
     
     execute_query(
-        'INSERT INTO access_logs (device_id, status, photo_url, timestamp) VALUES (%s, %s, %s, NOW())',
-        (device_id, status, photo_url)
+        '''INSERT INTO access_logs 
+           (device_id, status, photo_url, recognized_name, confidence, source, timestamp) 
+           VALUES (%s, %s, %s, %s, %s, %s, NOW())''',
+        (device_id, status, photo_url, recognized_name, confidence, source)
     )
     
     return success_response({'message': 'Log created'})
+
+@app.route('/api/face-unlock', methods=['POST'])
+@app.route('/api/face_unlock', methods=['POST'])
+def face_unlock_endpoint():
+    """
+    Face unlock API - Nhận diện khuôn mặt tự động từ ESP32
+    Được gọi khi cảm biến LM393 phát hiện chuyển động
+    """
+    try:
+        # Get image from request body (raw JPEG from ESP32)
+        img_data = request.get_data()
+        
+        if not img_data or len(img_data) < 100:
+            return error_response('No image data received', 400)
+        
+        # Check JPEG magic number
+        if img_data[:2] != b'\xFF\xD8':
+            return error_response('Invalid JPEG data', 400)
+        
+        # Save to temp file
+        tmp_file = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+        tmp_file.write(img_data)
+        tmp_file.close()
+        
+        try:
+            # Run face recognition
+            python_bin = APP_CONFIG['python_bin']
+            script_path = os.path.join(APP_CONFIG['tools_dir'], 'face_check.py')
+            
+            cmd = [
+                python_bin,
+                script_path,
+                '--image', tmp_file.name,
+                '--db', APP_CONFIG['faces_db_dir'],
+                '--tolerance', str(APP_CONFIG['tolerance'])
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=APP_CONFIG['python_timeout']
+            )
+            
+            if result.returncode != 0:
+                return error_response(f'Recognition error: {result.stderr}', 500)
+            
+            # Parse result
+            import json
+            face_result = json.loads(result.stdout)
+            
+            # Check if face is recognized
+            recognized = False
+            name = None
+            confidence = 0
+            
+            if face_result.get('ok') and face_result.get('faces'):
+                for face in face_result['faces']:
+                    if face.get('matched'):
+                        recognized = True
+                        name = face.get('name', 'Unknown')
+                        confidence = face.get('confidence', 0)
+                        break
+            
+            # Save photo if configured
+            photo_url = None
+            if APP_CONFIG.get('save_unlock_photos', True):
+                import shutil
+                day, day_path = ensure_upload_dir()
+                timestamp = int(time.time())
+                random_hex = binascii.hexlify(os.urandom(4)).decode()
+                filename = f"unlock_{timestamp}_{random_hex}.jpg"
+                
+                dest_path = os.path.join(day_path, filename)
+                shutil.copy(tmp_file.name, dest_path)
+                
+                base = APP_CONFIG.get('upload_base', '/uploads').rstrip('/')
+                photo_url = f"{base}/{day}/{filename}"
+            
+            # Log access attempt
+            device_id = request.args.get('device_id', 1)
+            status = 'granted' if recognized else 'denied'
+            
+            try:
+                execute_query(
+                    '''INSERT INTO access_logs 
+                       (device_id, status, photo_url, recognized_name, confidence, source, timestamp) 
+                       VALUES (%s, %s, %s, %s, %s, 'esp32_auto', NOW())''',
+                    (device_id, status, photo_url, name, confidence)
+                )
+            except Exception as log_err:
+                print(f"[WARN] Cannot save log: {log_err}")
+            
+            # Return result for ESP32
+            return success_response({
+                'recognized': recognized,
+                'name': name or '',
+                'confidence': confidence,
+                'faces_detected': len(face_result.get('faces', [])),
+                'photo_url': photo_url,
+                'timestamp': int(time.time())
+            })
+            
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_file.name):
+                os.unlink(tmp_file.name)
+                
+    except subprocess.TimeoutExpired:
+        return error_response('Recognition timeout', 500)
+    except Exception as e:
+        return error_response(f'Server error: {str(e)}', 500)
 
 # ==================== MAIN ====================
 

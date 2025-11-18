@@ -7,7 +7,7 @@ import os
 DB_CONFIG = {
     'host': '127.0.0.1',
     'port': 3306,
-    'database': 'esp32lock',
+    'database': 'ESP32KEY',
     'user': 'root',
     'password': '',
     'charset': 'utf8mb4'
@@ -42,8 +42,15 @@ APP_CONFIG = {
     # Face recognition tolerance (0.6 = standard, 0.55 = strict, 0.65-0.7 = relaxed)
     'tolerance': 0.6,
     
-    # Python process timeout in seconds
-    'python_timeout': 10
+    # Python process timeout in seconds (20s for first run cache rebuild, then 2-3s)
+    'python_timeout': 20,
+    
+    # Save photos for unlock attempts (True/False)
+    'save_unlock_photos': True,
+    
+    # LM393 sensor settings
+    'lm393_cooldown_ms': 5000,  # Cooldown time in milliseconds
+    'lm393_enabled': True  # Enable/disable LM393 auto trigger
 }
 
 # Export combined config

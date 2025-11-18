@@ -3,7 +3,7 @@
   <div class="row">
     <span class="title">📷 Camera ESP32-CAM</span>
 
-    <input id="esp_ip" value="192.168.0.107" placeholder="ESP32 IP...">
+    <input id="esp_ip" value="10.80.115.74" placeholder="ESP32 IP...">
 
     <button id="btn_reload" class="btn">Tải lại</button>
     <button id="btn_capture" class="btn">📸 Chụp ảnh</button>
@@ -25,6 +25,15 @@
     </label>
 
     <span id="cam_status" class="badge">IDLE</span>
+
+    <!-- Trạng thái cảm biến LM393 -->
+    <div class="sensor-status">
+      <span class="sensor-icon" id="sensor_icon">📡</span>
+      <div class="sensor-info">
+        <span class="sensor-label">Cảm biến Hồng Ngoại</span>
+        <span id="sensor_status" class="badge sensor-badge">CHECKING...</span>
+      </div>
+    </div>
   </div>
 
   <div class="content">
@@ -59,9 +68,11 @@
       <p class="note">
         <b>Ghi chú:</b> Enroll thường cần nhấn vài lần (mỗi lần chụp thêm mẫu - 5-10 lần).
         Stream MJPEG: <code>http://IP:81/stream</code>. Ảnh lưu tại <code>public/uploads/</code>.<br>
-        <b>� Nhận diện:</b> Nhấn nút "Nhận diện khuôn mặt" để AI phát hiện và nhận diện.<br>
+        <b>🔍 Nhận diện:</b> Nhấn nút "Nhận diện khuôn mặt" để AI phát hiện và nhận diện.<br>
         <b>📊 Kết quả:</b> 🟢 Khung XANH + Tên + % = Đúng | 🔴 Khung ĐỎ + Unknown = Sai hoặc chưa Enroll.<br>
-        <b>� Tips:</b> Ánh sáng đều, mặt chính diện, khoảng cách 0.5-2m. Tolerance: 0.8 (dễ nhận diện).
+        <b>💡 Tips:</b> Ánh sáng đều, mặt chính diện, khoảng cách 0.5-2m. Tolerance: 0.8 (dễ nhận diện).<br>
+        <b>🚨 Cảm biến LM393:</b> <strong>TỰ ĐỘNG hoạt động!</strong> ESP32 tự chụp và nhận diện khi phát hiện chuyển động.<br>
+        <b>📡 Trạng thái:</b> Frontend hiển thị kết quả realtime từ database (cập nhật mỗi giây).
       </p>
     </div>
   </div>
@@ -166,6 +177,128 @@
 
   .badge.err {
     border-color: #ef4444
+  }
+
+  /* Sensor status display */
+  .sensor-status {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #0f141a;
+    border: 2px solid #2b3240;
+    border-radius: 10px;
+    padding: 8px 14px;
+    margin-left: auto;
+    transition: all 0.3s ease;
+  }
+
+  .sensor-status.active {
+    border-color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+    animation: pulse-green 2s infinite;
+  }
+
+  .sensor-status.detecting {
+    border-color: #f59e0b;
+    background: rgba(245, 158, 11, 0.1);
+    animation: pulse-orange 1s infinite;
+  }
+
+  @keyframes pulse-green {
+
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+    }
+
+    50% {
+      box-shadow: 0 0 0 10px rgba(16, 185, 129, 0);
+    }
+  }
+
+  @keyframes pulse-orange {
+
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.4);
+    }
+
+    50% {
+      box-shadow: 0 0 0 10px rgba(245, 158, 11, 0);
+    }
+  }
+
+  .sensor-icon {
+    font-size: 24px;
+    animation: rotate 3s linear infinite;
+  }
+
+  .sensor-status.active .sensor-icon {
+    animation: none;
+  }
+
+  .sensor-status.detecting .sensor-icon {
+    animation: shake 0.5s infinite;
+  }
+
+  @keyframes rotate {
+    from {
+      transform: rotate(0deg);
+    }
+
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  @keyframes shake {
+
+    0%,
+    100% {
+      transform: translateX(0);
+    }
+
+    25% {
+      transform: translateX(-3px);
+    }
+
+    75% {
+      transform: translateX(3px);
+    }
+  }
+
+  .sensor-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .sensor-label {
+    font-size: 11px;
+    color: #9aa4b2;
+    font-weight: 500;
+  }
+
+  .sensor-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+  }
+
+  .sensor-badge.detected {
+    background: #10b981;
+    border-color: #10b981;
+    color: white;
+  }
+
+  .sensor-badge.idle {
+    background: #6b7280;
+    border-color: #6b7280;
+  }
+
+  .sensor-badge.recognizing {
+    background: #f59e0b;
+    border-color: #f59e0b;
+    color: white;
   }
 
   .esp32cam .content {
@@ -341,9 +474,17 @@
     const autoThr = SEL('#auto_thr');
     const autoMs = SEL('#auto_ms');
 
+    const sensorStatusEl = SEL('#sensor_status');
+    const sensorIcon = SEL('#sensor_icon');
+    const sensorContainer = SEL('.sensor-status');
+
     let autoTimer = null;
     let autoBusy = false; // chống chồng lệnh
     let useSimple = false; // fallback khi server báo thiếu GD
+    let sensorTimer = null; // Timer cho polling cảm biến
+    let isRecognizing = false; // Đang trong quá trình nhận diện
+    let lastSensorState = false; // Trạng thái cảm biến trước đó
+    let lastDisplayedLogId = null; // ID của log đã hiển thị (tránh hiển thị log cũ)
 
     // ====== UTILS ======
     const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -406,6 +547,284 @@
     function disableDuring(el, promise) {
       el.disabled = true;
       return promise.finally(() => el.disabled = false);
+    }
+
+    // ====== SENSOR (LM393) ======
+    function setSensorStatus(text, cls = '', containerCls = '') {
+      sensorStatusEl.textContent = text;
+      sensorStatusEl.className = `badge sensor-badge ${cls}`;
+      sensorContainer.className = `sensor-status ${containerCls}`;
+    }
+
+    async function checkSensor() {
+      try {
+        // Lấy 1 log mới nhất từ database
+        const res = await fetchJsonSafe(`${API_BASE}/logs?limit=1`);
+
+        if (res.ok && res.data && res.data.length > 0) {
+          const latestLog = res.data[0];
+          const logId = latestLog.id;
+          const logTime = new Date(latestLog.timestamp).getTime();
+          const now = Date.now();
+          const ageSeconds = (now - logTime) / 1000;
+          const status = latestLog.status;
+          const name = latestLog.recognized_name || 'Unknown';
+          const confidence = latestLog.confidence || 0;
+          const photoUrl = latestLog.photo_url;
+
+          // Nếu lần đầu tiên, khởi tạo lastDisplayedLogId
+          if (lastDisplayedLogId === null) {
+            lastDisplayedLogId = logId - 1; // Đánh dấu để log hiện tại được coi là "mới"
+          }
+
+          // Kiểm tra xem có phải log mới chưa xử lý không
+          const isNewLog = (logId > lastDisplayedLogId);
+
+          // ===== LOGIC THEO THỜI GIAN =====
+
+          if (ageSeconds < 3) {
+            // Log MỚI (< 3 giây) - ĐANG XỬ LÝ hoặc VỪA XONG
+
+            if (status === 'granted') {
+              setSensorStatus(`✅ ${name} (${Math.round(confidence)}%)`, 'detected', 'active');
+              sensorIcon.textContent = '✅';
+
+              // Chỉ hiển thị toast + ảnh lần đầu với log mới
+              if (isNewLog && !lastSensorState) {
+                toast(`✅ Cho phép: ${name} (${Math.round(confidence)}%)`, 3000);
+                if (photoUrl) {
+                  showAutoDetectionImage(photoUrl, name, confidence, true);
+                }
+                lastDisplayedLogId = logId;
+              }
+              lastSensorState = true;
+
+            } else if (status === 'denied') {
+              setSensorStatus(`❌ Không nhận diện`, 'err', 'detecting');
+              sensorIcon.textContent = '❌';
+
+              // Chỉ hiển thị toast + ảnh lần đầu với log mới
+              if (isNewLog && !lastSensorState) {
+                toast(`❌ Không nhận diện được`, 3000);
+                if (photoUrl) {
+                  showAutoDetectionImage(photoUrl, name, confidence, false);
+                }
+                lastDisplayedLogId = logId;
+              }
+              lastSensorState = true;
+            }
+
+          } else {
+            // Log > 3 giây - CŨ → Về trạng thái ĐANG CHỜ
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+            lastSensorState = false;
+          }
+        } else {
+          // Không có log nào - Hệ thống mới khởi động
+          setSensorStatus('🟢 SẴN SÀNG', 'ok', 'active');
+          sensorIcon.textContent = '📡';
+          lastSensorState = false;
+        }
+      } catch (e) {
+        console.warn('Sensor check error:', e);
+        setSensorStatus('⚠️ OFFLINE', 'err', '');
+        sensorIcon.textContent = '📡';
+      }
+    }
+
+    function startSensorPolling() {
+      if (sensorTimer) return;
+
+      console.log('🚀 Starting LM393 sensor polling (via database logs)...');
+      console.log('📌 Auto face detection: ENABLED (like button click)');
+      setSensorStatus('🔄 ĐANG KẾT NỐI...', '', '');
+
+      // Kiểm tra log mới để phát hiện khi ESP32 bắt đầu nhận diện
+      let lastLogId = null;
+
+      const enhancedCheckSensor = async () => {
+        try {
+          const res = await fetchJsonSafe(`${API_BASE}/logs?limit=1`);
+
+          if (res.ok && res.data && res.data.length > 0) {
+            const latestLog = res.data[0];
+            const logId = latestLog.id;
+            const logTime = new Date(latestLog.timestamp).getTime();
+            const now = Date.now();
+            const ageSeconds = (now - logTime) / 1000;
+            const logSource = latestLog.source || 'unknown';
+
+            // CHỈ trigger khi log từ ESP32 (auto) và là log MỚI (< 2 giây)
+            if (lastLogId !== null &&
+              logId > lastLogId &&
+              ageSeconds < 2 &&
+              logSource === 'esp32_auto') {
+              console.log(`🔔 ESP32 AUTO DETECTION! ID: ${logId}, Age: ${ageSeconds}s`);
+              triggerAutoRecognition();
+            } else if (lastLogId !== null && logId > lastLogId && ageSeconds < 2) {
+              console.log(`ℹ️ New log detected but source=${logSource}, skipping auto trigger`);
+            }
+
+            lastLogId = logId;
+          }
+        } catch (e) {
+          console.warn('Enhanced sensor check error:', e);
+        }
+
+        // Gọi hàm check sensor bình thường
+        await checkSensor();
+      };
+
+      // Poll mỗi 800ms (nhanh hơn để phát hiện kịp thời)
+      sensorTimer = setInterval(enhancedCheckSensor, 800);
+      enhancedCheckSensor(); // Check ngay lập tức
+    }
+
+    function stopSensorPolling() {
+      if (sensorTimer) {
+        clearInterval(sensorTimer);
+        sensorTimer = null;
+        setSensorStatus('⏸️ TẠM DỪNG', 'idle', '');
+        console.log('⏸️ Stopped LM393 sensor polling');
+      }
+    }
+
+    // Hiển thị ảnh khi ESP32 tự động nhận diện
+    async function showAutoDetectionImage(photoUrl, name, confidence, matched) {
+      console.log('📷 Displaying auto detection result:', {
+        photoUrl,
+        name,
+        confidence,
+        matched
+      });
+
+      try {
+        // photoUrl có dạng: /uploads/20251118/unlock_123456_abc.jpg
+        const imageUrl = `http://localhost:5000${photoUrl}`;
+
+        // Hiển thị ảnh gốc trước
+        imgEl.src = imageUrl;
+
+        // Tạo fake face result để hiển thị panel
+        const faceResult = {
+          ok: true,
+          faces: [{
+            name: name,
+            confidence: Math.round(confidence),
+            matched: matched,
+            box: [0, 0, 100, 100] // Box giả vì không có tọa độ thật
+          }],
+          latency_ms: 'ESP32 Auto'
+        };
+
+        // Hiển thị panel kết quả
+        showFaceResult(faceResult);
+
+        // Vẽ viền lên ảnh (không có box chính xác nên chỉ hiển thị status)
+        const canvas = document.getElementById('cam_canvas');
+        const ctx = canvas.getContext('2d');
+
+        imgEl.onload = () => {
+          canvas.width = imgEl.width;
+          canvas.height = imgEl.height;
+
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+          // Vẽ viền xung quanh ảnh
+          ctx.strokeStyle = matched ? '#10b981' : '#ef4444';
+          ctx.lineWidth = 6;
+          ctx.strokeRect(3, 3, canvas.width - 6, canvas.height - 6);
+
+          // Vẽ text ở góc trên
+          ctx.font = 'bold 20px Arial';
+          ctx.fillStyle = matched ? '#10b981' : '#ef4444';
+          const text = matched ? `✅ ${name} (${Math.round(confidence)}%)` : `❌ Unknown`;
+          ctx.fillText(text, 15, 35);
+        };
+
+        // Quay lại stream sau 5 giây
+        setTimeout(reloadCam, 5000);
+
+      } catch (e) {
+        console.error('Error displaying auto detection image:', e);
+      }
+    }
+
+    async function performAutoFaceDetection() {
+      // Tự động nhận diện giống y hệt button "Nhận diện khuôn mặt"
+      console.log('🤖 Auto face detection triggered by LM393 sensor');
+
+      try {
+        const ip = getIP();
+
+        // Hiển thị trạng thái đang nhận diện
+        setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
+        setStatus('AUTO DETECTING…', 'warn');
+
+        // Bước 1: Gọi API nhận diện (GIỐNG Y HỆT BUTTON)
+        const faceRes = await fetchJsonSafe(`${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`);
+
+        if (!faceRes.ok) {
+          console.warn('Auto detection failed:', faceRes.error);
+          return;
+        }
+
+        const faceCount = faceRes.faces ? faceRes.faces.length : 0;
+        const matchedCount = faceRes.faces ? faceRes.faces.filter(f => f.matched).length : 0;
+
+        if (faceCount === 0) {
+          console.log('No face detected in auto mode');
+          return;
+        }
+
+        // Bước 2: Lấy ảnh gốc
+        const imgRes = await fetch(`${API_BASE}/esp32-capture?ip=${encodeURIComponent(ip)}`);
+        const imgBlob = await imgRes.blob();
+
+        // Bước 3: Vẽ khung lên ảnh (GIỐNG Y HỆT BUTTON)
+        const boxesParam = encodeURIComponent(JSON.stringify(faceRes));
+        const overlayRes = await fetch(`${API_BASE}/draw-overlay?boxes=${boxesParam}`, {
+          method: 'POST',
+          body: imgBlob,
+          headers: {
+            'Content-Type': 'image/jpeg'
+          }
+        });
+
+        if (overlayRes.ok) {
+          const overlayBlob = await overlayRes.blob();
+          imgEl.src = URL.createObjectURL(overlayBlob);
+
+          // Hiển thị panel kết quả (GIỐNG Y HỆT BUTTON)
+          showFaceResult(faceRes);
+
+          // Toast notification
+          if (matchedCount > 0) {
+            const names = faceRes.faces
+              .filter(f => f.matched)
+              .map(f => f.name)
+              .join(', ');
+            toast(`🎯 LM393: Phát hiện ${names}`, 3000);
+          } else {
+            toast(`⚠️ LM393: Phát hiện ${faceCount} mặt nhưng không nhận diện được`, 3000);
+          }
+
+          // Quay lại stream sau 5 giây
+          setTimeout(reloadCam, 5000);
+        }
+
+      } catch (e) {
+        console.error('Auto face detection error:', e);
+      }
+    }
+
+    async function triggerAutoRecognition() {
+      // Mark đang trong quá trình nhận diện
+      isRecognizing = true;
+      setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
+      sensorIcon.textContent = '🔍';
+      console.log('⏭️ Waiting for ESP32 recognition result...');
     }
 
     // ====== CORE ======
@@ -705,6 +1124,7 @@
       try {
         const ip = getIP();
         setStatus('DETECTING…', 'warn');
+        setSensorStatus('🔍 ĐANG NHẬN DIỆN', 'recognizing', 'detecting');
 
         // Bước 1: Gọi API nhận diện
         const faceRes = await fetchJsonSafe(`${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`);
@@ -752,7 +1172,39 @@
           ).join(', ');
           setStatus(`DETECTED: ${names}`, 'ok');
 
-          toast(`Phát hiện ${faceCount} mặt, nhận diện ${matchedCount} người`);
+          // Lưu log vào database (mark as web_manual)
+          try {
+            const matchedFace = faceRes.faces.find(f => f.matched);
+            const status = matchedCount > 0 ? 'granted' : 'denied';
+            const recognizedName = matchedFace ? matchedFace.name : null;
+            const confidence = matchedFace ? matchedFace.confidence : null;
+
+            await fetch(`${API_BASE}/access-log`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                device_id: 'DOOR-01',
+                status: status,
+                recognized_name: recognizedName,
+                confidence: confidence,
+                photo_url: null,
+                source: 'web_manual' // CRITICAL: Mark as manual detection
+              })
+            }).catch(e => console.warn('Log save failed:', e));
+          } catch (e) {
+            console.warn('Failed to save log:', e);
+          }
+
+          // Hiển thị kết quả trên sensor status
+          if (matchedCount > 0) {
+            setSensorStatus(`✅ ${matchedCount} NGƯỜI`, 'detected', 'active');
+            toast(`✅ Phát hiện ${faceCount} mặt, nhận diện ${matchedCount} người`, 3000);
+          } else {
+            setSensorStatus('❌ KHÔNG RÕ', 'err', '');
+            toast(`⚠️ Phát hiện ${faceCount} mặt nhưng không nhận diện được`, 3000);
+          }
 
           setTimeout(reloadCam, 5000); // Quay lại stream sau 5s
         } else {
@@ -877,11 +1329,17 @@
     });
 
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) stopAuto();
-      else if (autoOn.checked) startAuto();
+      if (document.hidden) {
+        stopAuto();
+        stopSensorPolling();
+      } else {
+        if (autoOn.checked) startAuto();
+        startSensorPolling();
+      }
     });
 
     // ====== BOOT ======
     reloadCam();
+    startSensorPolling(); // Bật sensor polling khi tải trang
   })();
 </script>

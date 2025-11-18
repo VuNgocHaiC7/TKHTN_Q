@@ -2,6 +2,7 @@
 // Compatible with ESP32 Arduino core 3.3.2
 // Author: Vu Hai + ChatGPT (Optimized 2025)
 
+#include <Arduino.h>
 #include "esp_http_server.h"
 #include "esp_timer.h"
 #include "esp_camera.h"
@@ -254,6 +255,44 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   return httpd_resp_send(req, NULL, 0);
 }
 
+// ========== SENSOR STATUS HANDLER (LM393) ==========
+// Khai báo biến từ .ino
+extern bool isChecking;
+extern unsigned long lastTrigger;
+
+// Định nghĩa local constants (phải khớp với .ino)
+static const int PIN_LM393 = 14;
+static const int MOTION_ACTIVE_STATE = LOW;
+static const unsigned long COOLDOWN_MS = 5000;
+
+static esp_err_t sensor_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  
+  // Đọc trạng thái cảm biến
+  int sensor_value = digitalRead(PIN_LM393);
+  bool detected = (sensor_value == MOTION_ACTIVE_STATE);
+  
+  unsigned long now = millis();
+  unsigned long cooldown_remaining = 0;
+  
+  if (now > lastTrigger && (now - lastTrigger) < COOLDOWN_MS) {
+    cooldown_remaining = COOLDOWN_MS - (now - lastTrigger);
+  }
+  
+  char json[256];
+  snprintf(json, sizeof(json),
+    "{\"ok\":true,\"detected\":%s,\"value\":%d,\"is_checking\":%s,\"cooldown_ms\":%lu,\"timestamp\":%lu}",
+    detected ? "true" : "false",
+    sensor_value,
+    isChecking ? "true" : "false",
+    cooldown_remaining,
+    now
+  );
+  
+  return httpd_resp_send(req, json, strlen(json));
+}
+
 // ========== INDEX (web UI) ==========
 static esp_err_t index_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "text/html");
@@ -279,6 +318,7 @@ void startCameraServer() {
   httpd_uri_t status_uri  = {"/status",  HTTP_GET, status_handler,  NULL};
   httpd_uri_t cmd_uri     = {"/control", HTTP_GET, cmd_handler,     NULL};
   httpd_uri_t capture_uri = {"/capture", HTTP_GET, capture_handler, NULL};
+  httpd_uri_t sensor_uri  = {"/sensor",  HTTP_GET, sensor_handler,  NULL};
   httpd_uri_t stream_uri  = {"/stream",  HTTP_GET, stream_handler,  NULL};
 
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
@@ -286,6 +326,7 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &status_uri);
     httpd_register_uri_handler(camera_httpd, &cmd_uri);
     httpd_register_uri_handler(camera_httpd, &capture_uri);
+    httpd_register_uri_handler(camera_httpd, &sensor_uri);
   }
 
   config.server_port += 1;

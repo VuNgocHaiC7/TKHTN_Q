@@ -15,8 +15,7 @@ def main():
     print("\n1️⃣  Clearing old caches...")
     cache_files = [
         'faces_db/.encodings_cache.pkl',
-        'faces_db/.encodings_cache_v2.pkl',
-        'faces_db/.encodings_cache_ultra_fast.pkl'
+        'faces_db/.encodings_cache_v2.pkl'
     ]
     
     deleted_count = 0
@@ -89,38 +88,15 @@ def main():
         print(f"   ❌ Error: {e}")
         return
     
-    # Step 4: Rebuild ULTRA FAST cache (optional)
-    print("\n4️⃣  Building ULTRA FAST cache (face_check_ultra_fast.py)...")
-    print("   Settings: 480px, upsample=0, jitters=1, quality=FAST")
-    
-    cmd_fast = [
-        sys.executable,
-        'face_check_ultra_fast.py',
-        '--image', test_img,
-        '--db', 'faces_db',
-        '--tolerance', '0.6'
-    ]
-    
-    try:
-        result = subprocess.run(cmd_fast, capture_output=True, text=True, cwd=os.path.dirname(__file__))
-        if result.returncode == 0:
-            data = json.loads(result.stdout)
-            print(f"   ✅ Fast cache built in {data['latency_ms']}ms")
-        else:
-            print(f"   ⚠️  Warning: Could not build fast cache (optional)")
-    except Exception as e:
-        print(f"   ⚠️  Warning: {e} (optional)")
-    
     # Summary
     print("\n" + "=" * 60)
     print("✅ CACHE REBUILD COMPLETE!")
     print("=" * 60)
     print(f"Database: {len(db_images)} face(s)")
     print("Production cache: READY (high accuracy)")
-    print("Ultra fast cache: READY (high speed)")
     print("\nNext steps:")
-    print("1. Test with: python benchmark_profiles.py --image <test_image>")
-    print("2. Upload ESP32 firmware (VGA + quality 10)")
+    print("1. Test with: python face_check.py --image <test_image> --db faces_db")
+    print("2. Upload ESP32 firmware")
     print("3. Test full system via web interface")
     print()
 

@@ -15,27 +15,70 @@ import face_recognition
 CACHE_FILE = 'faces_db/.encodings_cache_v2.pkl'
 
 def load_known_encodings(db_dir):
-    """Load and cache face encodings - OPTIMIZED with HIGHER QUALITY"""
+    """Load and cache face encodings - OPTIMIZED FOR SPEED"""
     cache_path = os.path.join(db_dir, '.encodings_cache_v2.pkl')
     
-    # Check if cache exists and is fresh
+    # Check if cache exists and is fresh - FAST CHECK
     if os.path.exists(cache_path):
         try:
             cache_mtime = os.path.getmtime(cache_path)
-            db_files = [f for f in glob.glob(os.path.join(db_dir, '*.*')) if not f.endswith('.pkl')]
-            if db_files:
-                db_mtime = max([os.path.getmtime(f) for f in db_files])
-                
-                # If cache is newer than all db files, use it
-                if cache_mtime > db_mtime:
-                    with open(cache_path, 'rb') as f:
-                        data = pickle.load(f)
-                        return data['encodings'], data['names']
+            
+            # Fast check: only check subdirectories and immediate files
+            latest_mtime = cache_mtime - 1
+            
+            # Check subdirectories
+            for item in glob.glob(os.path.join(db_dir, '*')):
+                if os.path.isdir(item) and not os.path.basename(item).startswith('.'):
+                    # Check newest file in this person folder
+                    person_files = glob.glob(os.path.join(item, '*.*'))
+                    if person_files:
+                        dir_mtime = max([os.path.getmtime(f) for f in person_files])
+                        latest_mtime = max(latest_mtime, dir_mtime)
+            
+            # If cache is newer, use it
+            if cache_mtime > latest_mtime:
+                with open(cache_path, 'rb') as f:
+                    data = pickle.load(f)
+                    return data['encodings'], data['names']
         except:
             pass
     
     # Build cache with BALANCED optimization (accuracy + speed)
     encs, names = [], []
+    
+    # Scan subdirectories (person folders) first, then flat files
+    for person_dir in glob.glob(os.path.join(db_dir, '*')):
+        if not os.path.isdir(person_dir):
+            continue
+        if os.path.basename(person_dir).startswith('.'):
+            continue
+            
+        person_name = os.path.basename(person_dir)
+        
+        # Load all images from person's folder
+        for img_ext in ['*.jpg', '*.jpeg', '*.png', '*.JPG', '*.JPEG', '*.PNG']:
+            for path in glob.glob(os.path.join(person_dir, img_ext)):
+                try:
+                    pil_img = Image.open(path)
+                    if pil_img.mode != 'RGB':
+                        pil_img = pil_img.convert('RGB')
+                    
+                    # Database images: 400x400 for BETTER quality encoding
+                    pil_img.thumbnail((400, 400), Image.LANCZOS)
+                    img = np.array(pil_img, dtype=np.uint8)
+                    
+                    # HOG + upsample=1 = BETTER detection (detect smaller faces)
+                    locs = face_recognition.face_locations(img, model='hog', number_of_times_to_upsample=1)
+                    if not locs: 
+                        continue
+                    # num_jitters=2 = HIGHER accuracy for database (one-time cost)
+                    enc = face_recognition.face_encodings(img, locs, num_jitters=2)[0]
+                    encs.append(enc)
+                    names.append(person_name)
+                except Exception:
+                    continue
+    
+    # Fallback: also scan flat files in db_dir (old format compatibility)
     for path in glob.glob(os.path.join(db_dir, '*.*')):
         if path.endswith('.pkl'):
             continue
@@ -101,15 +144,15 @@ def main():
         }))
         return
 
-    # === STEP 2: Load and resize image - BALANCED (640px) ===
+    # === STEP 2: Load and resize image - OPTIMIZED FOR SPEED (480px) ===
     t1 = time.time()
     pil_img = Image.open(args.image)
     if pil_img.mode != 'RGB':
         pil_img = pil_img.convert('RGB')
     
-    # Target 640px width - OPTIMAL for accuracy (matches VGA from ESP32)
+    # Target 480px width - OPTIMIZED for speed (still good accuracy)
     width, height = pil_img.size
-    target_width = 640
+    target_width = 480
     
     if width > target_width:
         new_width = target_width
@@ -144,8 +187,8 @@ def main():
     
     # === STEP 4: Encode faces ===
     t1 = time.time()
-    # num_jitters=2 = BALANCED accuracy (97%+)
-    encs = face_recognition.face_encodings(img, locs, num_jitters=2)
+    # num_jitters=1 = FAST encoding for real-time (95%+ accuracy is still good)
+    encs = face_recognition.face_encodings(img, locs, num_jitters=1)
     t_steps['face_encode'] = int((time.time() - t1) * 1000)
 
     # === STEP 5: Match faces - VECTORIZED ===

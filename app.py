@@ -25,6 +25,14 @@ from config.env import APP_CONFIG
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
+# =============== LM393 IR STATE (in-memory) ===============
+# Lưu trạng thái cảm biến để frontend hỏi lại
+_ir_state = {
+    "state": "waiting",        # "waiting" | "detecting"
+    "updated_at": time.time()  # thời điểm cập nhật gần nhất (unix timestamp)
+}
+
+
 # ==================== UTILITY FUNCTIONS ====================
 
 def get_esp_ip():
@@ -477,6 +485,42 @@ def create_log():
     except Exception as e:
         return error_response(f'Failed to save log: {str(e)}', 500)
 
+# ---- IR state endpoint: ESP32 update + frontend query ----
+@app.route('/api/ir-state', methods=['GET'])
+def ir_state():
+    """
+    Hai chế độ trong cùng 1 endpoint:
+    - ESP32:  GET /api/ir-state?state=waiting|detecting  -> cập nhật trạng thái
+    - Web:    GET /api/ir-state                         -> lấy trạng thái hiện tại
+    """
+    global _ir_state
+
+    state_param = request.args.get('state', type=str)
+
+    # 1) ESP32 gửi trạng thái mới
+    if state_param is not None:
+        state_param = state_param.lower()
+        if state_param not in ("waiting", "detecting"):
+            return error_response("Invalid state", 400)
+
+        _ir_state["state"] = state_param
+        _ir_state["updated_at"] = time.time()
+        print(f"[IR] Update state from ESP32 -> {_ir_state['state']}")
+        return success_response({"state": _ir_state["state"]})
+
+    # 2) Frontend hỏi trạng thái hiện tại
+    age = time.time() - _ir_state["updated_at"]
+
+    # Nếu đang "detecting" quá lâu (ESP32 im lặng) thì tự reset về "waiting"
+    if _ir_state["state"] == "detecting" and age > 10:
+        _ir_state["state"] = "waiting"
+
+    return success_response({
+        "state": _ir_state["state"],
+        "age": age
+    })
+
+
 @app.route('/api/sensor/config', methods=['GET'])
 @require_api_key
 def get_sensor_config():
@@ -652,7 +696,7 @@ def face_unlock_endpoint():
                 photo_url = f"{base}/{day}/{filename}"
             
             # Log access attempt
-            device_id = request.args.get('device_id', 1)
+            device_id = request.args.get('device_id') or 'DOOR-01'
             status = 'granted' if recognized else 'denied'
             
             try:
@@ -663,7 +707,7 @@ def face_unlock_endpoint():
                     (device_id, status, photo_url, name, confidence)
                 )
             except Exception as log_err:
-                print(f"[WARN] Cannot save log: {log_err}")
+                print(f"[WARN] Cannot save log to access_logs: {log_err}")
             
             # Return result for ESP32
             return success_response({

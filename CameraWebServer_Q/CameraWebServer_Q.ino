@@ -1,4 +1,4 @@
-// CameraWebServer_Q.ino — Face Unlock (LM393 trigger + auto WiFi reconnect)
+// CameraWebServer_Q.ino — Face Unlock (LM393 trigger + auto WiFi reconnect + IR state)
 // Core ESP32 3.3.x
 
 #include <Arduino.h>
@@ -13,6 +13,10 @@
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
 static const char* BACKEND_URL = "http://10.80.115.224:5000/api/face-unlock";  // Flask Python API
+
+// === NEW (IR STATE) ===
+// Endpoint để báo trạng thái cảm biến cho backend / web.
+static const char* IR_STATE_URL = "http://10.80.115.224:5000/api/ir-state";
 
 // ================== Relay + LED ==================
 #define PIN_RELAY  2
@@ -39,8 +43,20 @@ const unsigned long COOLDOWN_MS = 5000;   // 5s cooldown giữa các lần nhậ
 unsigned long lastWifiTry = 0;
 const unsigned long WIFI_RETRY_EVERY = 10000; // 10s thử reconnect 1 lần
 
+// === NEW (IR STATE) ===
+// Enum trạng thái cảm biến để gửi về web
+enum IrStateEnum {
+  IR_STATE_UNKNOWN = 0,
+  IR_STATE_WAITING,
+  IR_STATE_DETECTING
+};
+
+IrStateEnum g_lastIrState = IR_STATE_UNKNOWN;
+
 // ================== prototype ==================
 void startCameraServer();
+static void send_ir_state(const char* state);
+static void set_ir_state(IrStateEnum s);
 
 // ================== WiFi ==================
 static void wifi_connect() {
@@ -73,6 +89,45 @@ static void ensureWifi() {
   lastWifiTry = now;
   Serial.println("[WiFi] Disconnected → retry wifi_connect()...");
   wifi_connect();
+}
+
+// === NEW (IR STATE) ===
+// Gửi trạng thái LM393 về backend để giao diện web đọc
+static void send_ir_state(const char* state) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.printf("[IR] Skip send '%s' (WiFi down)\n", state);
+    return;
+  }
+
+  HTTPClient http;
+  String url = "http://10.80.115.224:5000/api/face-unlock?device_id=DOOR-01";
+
+  http.begin(url);
+  int code = http.GET();
+
+  if (code > 0) {
+    Serial.printf("[IR] Sent state=%s, http=%d\n", state, code);
+  } else {
+    Serial.printf("[IR] Send failed: %s\n", http.errorToString(code).c_str());
+  }
+
+  http.end();
+}
+
+// Chỉ gửi khi state thay đổi
+static void set_ir_state(IrStateEnum s) {
+  if (s == g_lastIrState) return;
+  g_lastIrState = s;
+
+  const char* text = "unknown";
+  switch (s) {
+    case IR_STATE_WAITING:   text = "waiting";   break;
+    case IR_STATE_DETECTING: text = "detecting"; break;
+    default:                 text = "unknown";   break;
+  }
+
+  Serial.printf("[IR] Change state → %s\n", text);
+  send_ir_state(text);
 }
 
 // ================== Camera Init ==================
@@ -279,6 +334,10 @@ void setup() {
     MOTION_ACTIVE_STATE == HIGH ? "HIGH (module sáng khi có người)"
                                 : "LOW (module tắt khi có người)");
   Serial.println("[LM393] Sẵn sàng phát hiện chuyển động...");
+
+  // === NEW (IR STATE) ===
+  bool initialMotion = (initialState == MOTION_ACTIVE_STATE);
+  set_ir_state(initialMotion ? IR_STATE_DETECTING : IR_STATE_WAITING);
 }
 
 // ================== LOOP (trigger bằng LM393, style IOT + auto WiFi) ==================
@@ -290,6 +349,10 @@ void loop() {
   unsigned long now   = millis();
   int sensor          = digitalRead(PIN_LM393);
   bool motionDetected = (sensor == MOTION_ACTIVE_STATE);
+
+  // === NEW (IR STATE) ===
+  // Cập nhật trạng thái cho web: ĐANG CHỜ / ĐANG NHẬN DIỆN
+  set_ir_state(motionDetected ? IR_STATE_DETECTING : IR_STATE_WAITING);
 
   // Debug trạng thái định kỳ
   static unsigned long lastDebugPrint = 0;
@@ -363,7 +426,7 @@ void loop() {
       }
       else {
         Serial.println("========================================");
-        Serial.println("❌ TỪNG CHỐI!");
+        Serial.println("❌ TỪ CHỐI!");
         Serial.println("⚠️ Không nhận diện được khuôn mặt");
         if (who.length() > 0) {
           Serial.printf("ℹ️ Phát hiện: %s (độ chính xác thấp)\n", who.c_str());

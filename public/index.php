@@ -456,45 +456,43 @@
 <script>
   (() => {
     // ====== CONFIG ======
-    const API_BASE = 'http://localhost:5000/api'; // Python Flask API
+    const API_BASE = 'http://localhost:5000/api';
     const SEL = s => document.querySelector(s);
+
+    // DOM Elements
     const ipEl = SEL('#esp_ip');
     const imgEl = SEL('#cam');
     const statusEl = SEL('#cam_status');
-
     const btnReload = SEL('#btn_reload');
     const btnCapture = SEL('#btn_capture');
     const btnEnroll = SEL('#btn_enroll');
     const btnRecognize = SEL('#btn_recognize');
-
     const canvasEl = SEL('#cam_canvas');
     const ctx = canvasEl.getContext('2d');
-
     const autoOn = SEL('#auto_on');
     const autoThr = SEL('#auto_thr');
     const autoMs = SEL('#auto_ms');
-
     const sensorStatusEl = SEL('#sensor_status');
     const sensorIcon = SEL('#sensor_icon');
     const sensorContainer = SEL('.sensor-status');
 
+    // State variables
+    let sensorTimer = null;
+    let lastLogId = null;
+    let autoBusy = false;
     let autoTimer = null;
-    let autoBusy = false; // chống chồng lệnh
-    let useSimple = false; // fallback khi server báo thiếu GD
-    let sensorTimer = null; // Timer cho polling cảm biến
-    let isRecognizing = false; // Đang trong quá trình nhận diện
-    let lastSensorState = false; // Trạng thái cảm biến trước đó
-    let lastDisplayedLogId = null; // ID của log đã hiển thị (tránh hiển thị log cũ)
+    let sensorPopupTimer = null;
 
-    // ====== UTILS ======
+
+    // ====== UTILITY FUNCTIONS ======
     const sleep = ms => new Promise(r => setTimeout(r, ms));
 
     function toast(msg, ms = 2500) {
-      const t = document.createElement('div');
-      t.className = 'toast';
-      t.textContent = msg;
-      document.body.appendChild(t);
-      setTimeout(() => t.remove(), ms);
+      const toast = document.createElement('div');
+      toast.className = 'toast';
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => toast.remove(), ms);
     }
 
     function setStatus(text, cls = '') {
@@ -502,42 +500,15 @@
       statusEl.className = `badge ${cls}`;
     }
 
-    function streamUrl(ip) {
-      return `http://${ip}:81/stream`;
-    }
-
-    function capUrl(ip) {
-      return `http://${ip}/capture`;
-    }
-
-    function validIP(v) {
-      return /^[0-9.]+$/.test(v.trim());
-    }
-
-    async function fetchJsonSafe(url, opts = {}) {
-      const res = await fetch(url, {
-        cache: 'no-store',
-        ...opts
-      });
-      // Nếu HTTP lỗi → ném lỗi kèm body text để debug
-      if (!res.ok) {
-        const raw = await res.text().catch(() => '');
-        throw new Error(`HTTP ${res.status} @ ${url}\n${raw.slice(0,200)}`);
-      }
-      // Chỉ parse JSON khi chắc chắn
-      const ct = res.headers.get('content-type') || '';
-      if (ct.includes('application/json')) return res.json();
-      const txt = await res.text();
-      try {
-        return JSON.parse(txt);
-      } catch {
-        throw new Error(`Expected JSON but got: ${txt.slice(0,200)}`);
-      }
+    function setSensorStatus(text, badgeCls = '', containerCls = '') {
+      sensorStatusEl.textContent = text;
+      sensorStatusEl.className = `badge sensor-badge ${badgeCls}`;
+      sensorContainer.className = `sensor-status ${containerCls}`;
     }
 
     function getIP() {
       const ip = ipEl.value.trim();
-      if (!ip || !validIP(ip)) {
+      if (!ip || !/^[0-9.]+$/.test(ip)) {
         toast('IP không hợp lệ');
         throw new Error('Invalid IP');
       }
@@ -549,206 +520,154 @@
       return promise.finally(() => el.disabled = false);
     }
 
-    // ====== SENSOR (LM393) ======
-    function setSensorStatus(text, cls = '', containerCls = '') {
-      sensorStatusEl.textContent = text;
-      sensorStatusEl.className = `badge sensor-badge ${cls}`;
-      sensorContainer.className = `sensor-status ${containerCls}`;
+    async function fetchJsonSafe(url, opts = {}) {
+      const res = await fetch(url, {
+        cache: 'no-store',
+        ...opts
+      });
+      if (!res.ok) {
+        const raw = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status} @ ${url}\n${raw.slice(0, 200)}`);
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) return res.json();
+      const txt = await res.text();
+      try {
+        return JSON.parse(txt);
+      } catch {
+        throw new Error(`Expected JSON but got: ${txt.slice(0, 200)}`);
+      }
     }
 
-    async function checkSensor() {
+    // ====== SENSOR (LM393) FUNCTIONS ======
+    async function checkIrState() {
       try {
-        // Lấy 1 log mới nhất từ database
-        const res = await fetchJsonSafe(`${API_BASE}/logs?limit=1`);
+        const res = await fetchJsonSafe(`${API_BASE}/ir-state`);
+        const state = (res.state || '').toLowerCase();
 
-        if (res.ok && res.data && res.data.length > 0) {
-          const latestLog = res.data[0];
-          const logId = latestLog.id;
-          const logTime = new Date(latestLog.timestamp).getTime();
-          const now = Date.now();
-          const ageSeconds = (now - logTime) / 1000;
-          const status = latestLog.status;
-          const name = latestLog.recognized_name || 'Unknown';
-          const confidence = latestLog.confidence || 0;
-          const photoUrl = latestLog.photo_url;
-
-          // Nếu lần đầu tiên, khởi tạo lastDisplayedLogId
-          if (lastDisplayedLogId === null) {
-            lastDisplayedLogId = logId - 1; // Đánh dấu để log hiện tại được coi là "mới"
-          }
-
-          // Kiểm tra xem có phải log mới chưa xử lý không
-          const isNewLog = (logId > lastDisplayedLogId);
-
-          // ===== LOGIC THEO THỜI GIAN =====
-
-          if (ageSeconds < 3) {
-            // Log MỚI (< 3 giây) - ĐANG XỬ LÝ hoặc VỪA XONG
-
-            if (status === 'granted') {
-              setSensorStatus(`✅ ${name} (${Math.round(confidence)}%)`, 'detected', 'active');
-              sensorIcon.textContent = '✅';
-
-              // Chỉ hiển thị toast + ảnh lần đầu với log mới
-              if (isNewLog && !lastSensorState) {
-                toast(`✅ Cho phép: ${name} (${Math.round(confidence)}%)`, 3000);
-                if (photoUrl) {
-                  showAutoDetectionImage(photoUrl, name, confidence, true);
-                }
-                lastDisplayedLogId = logId;
-              }
-              lastSensorState = true;
-
-            } else if (status === 'denied') {
-              setSensorStatus(`❌ Không nhận diện`, 'err', 'detecting');
-              sensorIcon.textContent = '❌';
-
-              // Chỉ hiển thị toast + ảnh lần đầu với log mới
-              if (isNewLog && !lastSensorState) {
-                toast(`❌ Không nhận diện được`, 3000);
-                if (photoUrl) {
-                  showAutoDetectionImage(photoUrl, name, confidence, false);
-                }
-                lastDisplayedLogId = logId;
-              }
-              lastSensorState = true;
-            }
-
-          } else {
-            // Log > 3 giây - CŨ → Về trạng thái ĐANG CHỜ
-            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
-            sensorIcon.textContent = '📡';
-            lastSensorState = false;
-          }
+        if (state === 'detecting') {
+          // LM393 đang sáng → ESP32 đang chụp / gửi ảnh
+          setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
+          sensorIcon.textContent = '🔍';
         } else {
-          // Không có log nào - Hệ thống mới khởi động
-          setSensorStatus('🟢 SẴN SÀNG', 'ok', 'active');
+          // Mặc định: waiting
+          setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
           sensorIcon.textContent = '📡';
-          lastSensorState = false;
         }
       } catch (e) {
-        console.warn('Sensor check error:', e);
+        console.warn('IR state error:', e);
         setSensorStatus('⚠️ OFFLINE', 'err', '');
         sensorIcon.textContent = '📡';
       }
     }
 
-    function startSensorPolling() {
-      if (sensorTimer) return;
+    // 2) Đọc log mới nhất để HIỂN THỊ KẾT QUẢ (toast + popup) – KHÔNG đụng vào badge
+    // Đọc log mới nhất để HIỂN THỊ KẾT QUẢ (toast + popup) – KHÔNG đụng vào <img id="cam">
+    // Đọc log mới nhất để hiện popup giống nút "Nhận diện khuôn mặt"
+    async function checkSensorLog() {
+      try {
+        const res = await fetchJsonSafe(`${API_BASE}/logs?limit=1`);
 
-      console.log('🚀 Starting LM393 sensor polling (via database logs)...');
-      console.log('📌 Auto face detection: ENABLED (like button click)');
-      setSensorStatus('🔄 ĐANG KẾT NỐI...', '', '');
+        // Không có dữ liệu
+        if (!res.data || res.data.length === 0) return;
 
-      // Kiểm tra log mới để phát hiện khi ESP32 bắt đầu nhận diện
-      let lastLogId = null;
+        const latest = res.data[0];
 
-      const enhancedCheckSensor = async () => {
-        try {
-          const res = await fetchJsonSafe(`${API_BASE}/logs?limit=1`);
-
-          if (res.ok && res.data && res.data.length > 0) {
-            const latestLog = res.data[0];
-            const logId = latestLog.id;
-            const logTime = new Date(latestLog.timestamp).getTime();
-            const now = Date.now();
-            const ageSeconds = (now - logTime) / 1000;
-            const logSource = latestLog.source || 'unknown';
-
-            // CHỈ trigger khi log từ ESP32 (auto) và là log MỚI (< 2 giây)
-            if (lastLogId !== null &&
-              logId > lastLogId &&
-              ageSeconds < 2 &&
-              logSource === 'esp32_auto') {
-              console.log(`🔔 ESP32 AUTO DETECTION! ID: ${logId}, Age: ${ageSeconds}s`);
-              triggerAutoRecognition();
-            } else if (lastLogId !== null && logId > lastLogId && ageSeconds < 2) {
-              console.log(`ℹ️ New log detected but source=${logSource}, skipping auto trigger`);
-            }
-
-            lastLogId = logId;
-          }
-        } catch (e) {
-          console.warn('Enhanced sensor check error:', e);
+        // Lần đầu load trang: chỉ ghi nhớ id, KHÔNG hiển thị log cũ
+        if (lastLogId === null) {
+          lastLogId = latest.id;
+          return;
         }
 
-        // Gọi hàm check sensor bình thường
-        await checkSensor();
-      };
+        // Không có log mới
+        if (latest.id <= lastLogId) return;
+        lastLogId = latest.id;
 
-      // Poll mỗi 800ms (nhanh hơn để phát hiện kịp thời)
-      sensorTimer = setInterval(enhancedCheckSensor, 800);
-      enhancedCheckSensor(); // Check ngay lập tức
-    }
+        // Chỉ quan tâm log tự động từ ESP32 (LM393)
+        if ((latest.source || '') !== 'esp32_auto') return;
 
-    function stopSensorPolling() {
-      if (sensorTimer) {
-        clearInterval(sensorTimer);
-        sensorTimer = null;
-        setSensorStatus('⏸️ TẠM DỪNG', 'idle', '');
-        console.log('⏸️ Stopped LM393 sensor polling');
-      }
-    }
+        const ok = latest.status === 'granted';
+        const name = latest.recognized_name || 'Unknown';
+        const conf = Math.round(latest.confidence || 0);
 
-    // Hiển thị ảnh khi ESP32 tự động nhận diện
-    async function showAutoDetectionImage(photoUrl, name, confidence, matched) {
-      console.log('📷 Displaying auto detection result:', {
-        photoUrl,
-        name,
-        confidence,
-        matched
-      });
-
-      try {
-        // photoUrl có dạng: /uploads/20251118/unlock_123456_abc.jpg
-        const imageUrl = `http://localhost:5000${photoUrl}`;
-
-        // Hiển thị ảnh gốc trước
-        imgEl.src = imageUrl;
-
-        // Tạo fake face result để hiển thị panel
-        const faceResult = {
-          ok: true,
+        // 👉 Tạo fake result giống như /face-check trả về
+        const fakeResult = {
           faces: [{
-            name: name,
-            confidence: Math.round(confidence),
-            matched: matched,
-            box: [0, 0, 100, 100] // Box giả vì không có tọa độ thật
+            name: ok ? name : 'Unknown',
+            matched: ok,
+            confidence: conf,
+            box: [0, 0, 100, 100] // box giả cho UI, không ảnh hưởng gì
           }],
           latency_ms: 'ESP32 Auto'
         };
 
-        // Hiển thị panel kết quả
-        showFaceResult(faceResult);
+        // Hiện panel kết quả
+        showFaceResult(fakeResult);
 
-        // Vẽ viền lên ảnh (không có box chính xác nên chỉ hiển thị status)
-        const canvas = document.getElementById('cam_canvas');
-        const ctx = canvas.getContext('2d');
+        // Cập nhật badge cảm biến
+        if (ok) {
+          setSensorStatus(`✅ ${name} (${conf}%)`, 'detected', 'active');
+          sensorIcon.textContent = '✅';
+          toast(`✅ Cho phép: ${name} (${conf}%)`, 3000);
+        } else {
+          setSensorStatus('❌ Unknown', 'err', 'detecting');
+          sensorIcon.textContent = '❌';
+          toast('❌ Không nhận diện được', 3000);
+        }
 
-        imgEl.onload = () => {
-          canvas.width = imgEl.width;
-          canvas.height = imgEl.height;
+        // Nếu trước đó đã có timer thì huỷ
+        if (sensorPopupTimer) {
+          clearTimeout(sensorPopupTimer);
+          sensorPopupTimer = null;
+        }
 
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-          // Vẽ viền xung quanh ảnh
-          ctx.strokeStyle = matched ? '#10b981' : '#ef4444';
-          ctx.lineWidth = 6;
-          ctx.strokeRect(3, 3, canvas.width - 6, canvas.height - 6);
-
-          // Vẽ text ở góc trên
-          ctx.font = 'bold 20px Arial';
-          ctx.fillStyle = matched ? '#10b981' : '#ef4444';
-          const text = matched ? `✅ ${name} (${Math.round(confidence)}%)` : `❌ Unknown`;
-          ctx.fillText(text, 15, 35);
-        };
-
-        // Quay lại stream sau 5 giây
-        setTimeout(reloadCam, 5000);
+        // Sau 4 giây tự ẩn popup + reset trạng thái cảm biến
+        sensorPopupTimer = setTimeout(() => {
+          hideFaceResultPanel();
+        }, 4000);
 
       } catch (e) {
-        console.error('Error displaying auto detection image:', e);
+        console.warn('Sensor log error:', e);
       }
+    }
+
+
+    function hideFaceResultPanel() {
+      const panel = document.getElementById('face_result');
+      panel.style.display = 'none';
+      // Xoá bất kỳ vẽ vời nào trên canvas
+      ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+      // Cho sensor về trạng thái chờ
+      setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+      sensorIcon.textContent = '📡';
+    }
+
+    // 3) Polling chung cho LM393: IR state + log
+    function startSensorPolling() {
+      if (sensorTimer) return;
+
+      console.log('🚀 Start LM393 sensor polling (IR state + logs)…');
+      // Khi bắt đầu: hiển thị đang kết nối
+      setSensorStatus('🔄 ĐANG KẾT NỐI...', '', '');
+      sensorIcon.textContent = '📡';
+
+      // Gộp 2 việc vào một interval
+      const loop = () => {
+        checkIrState(); // trạng thái ĐANG CHỜ / ĐANG NHẬN DIỆN / OFFLINE
+        checkSensorLog(); // nếu có log mới từ ESP32 → popup/toast
+      };
+
+      sensorTimer = setInterval(loop, 800);
+      loop(); // chạy lần đầu ngay lập tức
+    }
+
+    function stopSensorPolling() {
+      if (!sensorTimer) return;
+      clearInterval(sensorTimer);
+      sensorTimer = null;
+      console.log('⏸️ Stop LM393 sensor polling');
+      setSensorStatus('⏸️ TẠM DỪNG', 'idle', '');
+      sensorIcon.textContent = '📡';
     }
 
     async function performAutoFaceDetection() {
@@ -819,27 +738,19 @@
       }
     }
 
-    async function triggerAutoRecognition() {
-      // Mark đang trong quá trình nhận diện
-      isRecognizing = true;
-      setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
-      sensorIcon.textContent = '🔍';
-      console.log('⏭️ Waiting for ESP32 recognition result...');
-    }
-
-    // ====== CORE ======
+    // ====== CORE CAMERA FUNCTIONS ======
     function reloadCam() {
       try {
         const ip = getIP();
-        imgEl.src = streamUrl(ip);
+        imgEl.src = `http://${ip}:81/stream`;
         setStatus('STREAM', 'ok');
-
-        // Sync canvas size với image
         imgEl.onload = () => {
           canvasEl.width = imgEl.width;
           canvasEl.height = imgEl.height;
         };
-      } catch {}
+      } catch (e) {
+        console.warn('Reload cam failed:', e.message);
+      }
     }
 
     // Vẽ khung nhận diện đơn giản
@@ -895,195 +806,98 @@
       });
 
       ctx.restore();
-    } // Bật/tắt chế độ real-time face detection
-    async function toggleStreamFaceDetect() {
-      if (isStreamingFaceDetect) {
-        stopStreamFaceDetect();
-      } else {
-        startStreamFaceDetect();
-      }
     }
 
-    function startStreamFaceDetect() {
-      if (isStreamingFaceDetect) return;
-
-      console.log('🚀 Starting ULTRA-FAST stream face TRACKING...');
-      isStreamingFaceDetect = true;
-      trackingMode = 'yellow';
-      btnFaceDetect.textContent = '⏹️ Tắt tracking';
-      btnFaceDetect.style.background = '#ef4444'; // Đỏ khi đang tracking
-
-      // Gọi API tracking cực nhanh
-      async function detectLoop() {
-        if (!isStreamingFaceDetect) return;
-
-        // Bỏ qua nếu request trước chưa xong
-        if (detectInProgress) {
-          if (isStreamingFaceDetect) {
-            faceDetectInterval = setTimeout(detectLoop, 30); // Retry nhanh
-          }
-          return;
-        }
-
-        detectInProgress = true;
-
-        try {
-          const ip = getIP();
-
-          // Chọn API dựa theo mode
-          let apiUrl;
-          if (trackingMode === 'yellow') {
-            // API SIÊU NHANH - Haar Cascade
-            apiUrl = `${API_BASE}/face-detect-fast?ip=${encodeURIComponent(ip)}`;
-          } else {
-            // API đầy đủ với recognition
-            apiUrl = `${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`;
-          }
-
-          const faceRes = await fetchJsonSafe(apiUrl);
-
-          if (faceRes.ok && faceRes.faces) {
-            lastFaceData = faceRes;
-            drawFaceBoxes(faceRes.faces, trackingMode);
-
-            const faceCount = faceRes.faces.length;
-            if (trackingMode === 'yellow') {
-              setStatus(`🎯 ${faceCount} faces [${faceRes.latency_ms}ms]`, 'warn');
-            } else {
-              const matchedCount = faceRes.faces.filter(f => f.matched).length;
-              const avgConf = faceRes.faces.length > 0 ?
-                Math.round(faceRes.faces.reduce((sum, f) => sum + (f.confidence || 0), 0) / faceRes.faces.length) :
-                0;
-              setStatus(`✅ ${matchedCount}/${faceCount} (${avgConf}%) [${faceRes.latency_ms}ms]`, 'ok');
-            }
-
-            // Auto-switch to recognition nếu phát hiện khuôn mặt mới trong tracking mode
-            if (trackingMode === 'yellow' && faceCount > 0 && !recognitionCooldown) {
-              // Trigger auto-recognition sau 2 giây tracking ổn định
-              if (!recognitionTimeout) {
-                recognitionTimeout = setTimeout(() => {
-                  if (isStreamingFaceDetect && trackingMode === 'yellow') {
-                    performAutoRecognition();
-                  }
-                }, 2000);
-              }
-            }
-          } else {
-            drawFaceBoxes([]);
-            setStatus('No face', 'warn');
-            // Clear auto-recognition timeout nếu mất mặt
-            if (recognitionTimeout) {
-              clearTimeout(recognitionTimeout);
-              recognitionTimeout = null;
-            }
-          }
-        } catch (e) {
-          console.warn('Face detect error:', e);
-        } finally {
-          detectInProgress = false;
-        }
-
-        // SIÊU NHANH: 50ms cho tracking (20 FPS), 300ms cho recognition
-        const interval = trackingMode === 'yellow' ? 50 : 300;
-        if (isStreamingFaceDetect) {
-          faceDetectInterval = setTimeout(detectLoop, interval);
-        }
-      }
-
-      detectLoop();
-    }
-
-    function stopStreamFaceDetect() {
-      isStreamingFaceDetect = false;
-      trackingMode = 'yellow';
-      btnFaceDetect.textContent = '🎯 Bật tracking';
-      btnFaceDetect.style.background = '#16a34a';
-
-      if (faceDetectInterval) {
-        clearTimeout(faceDetectInterval);
-        faceDetectInterval = null;
-      }
-
-      if (recognitionTimeout) {
-        clearTimeout(recognitionTimeout);
-        recognitionTimeout = null;
-      }
+    // Vẽ viền + text khi auto từ LM393, KHÔNG đổi src của <img>
+    function drawAutoOverlayOnCanvas(matched, name, confidence) {
+      // Đồng bộ kích thước canvas với ảnh hiện tại
+      canvasEl.width = imgEl.clientWidth || imgEl.naturalWidth || canvasEl.width;
+      canvasEl.height = imgEl.clientHeight || imgEl.naturalHeight || canvasEl.height;
 
       ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-      lastFaceData = null;
-      setStatus('STREAM', 'ok');
+
+      const color = matched ? '#10b981' : '#ef4444';
+      const label = matched ?
+        `✅ ${name} (${confidence}%)` :
+        '❌ Unknown';
+
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 6;
+
+      // Vẽ khung quanh toàn bộ khung hình cho dễ nhìn
+      ctx.strokeRect(3, 3, canvasEl.width - 6, canvasEl.height - 6);
+
+      // Vẽ text ở góc trên
+      ctx.font = 'bold 20px Arial';
+      ctx.fillStyle = color;
+      ctx.fillText(label, 15, 35);
+      ctx.restore();
     }
 
-    // Hàm nhận diện (chuyển sang chế độ recognition)
-    async function performRecognition() {
-      if (!isStreamingFaceDetect) {
-        // Nếu chưa bật tracking, bật luôn
-        startStreamFaceDetect();
-        await sleep(500); // Đợi 1 frame
-      }
 
-      console.log('🔍 Manual recognition triggered...');
+    // Hiển thị popup + viền ảnh cho log tự động từ ESP32 (LM393)
+    function showAutoDetectionFromLog(latest) {
+      const name = latest.recognized_name || 'Unknown';
+      const conf = Math.round(latest.confidence || 0);
+      const matched = latest.status === 'granted';
+      const photoUrl = latest.photo_url;
 
-      // Chuyển sang chế độ recognition
-      trackingMode = 'recognition';
-      btnRecognize.textContent = '⏳ Đang nhận diện...';
-      btnRecognize.disabled = true;
+      if (!photoUrl) return; // không có ảnh thì thôi
 
-      // Clear timeout cũ nếu có
-      if (recognitionTimeout) {
-        clearTimeout(recognitionTimeout);
-      }
+      // Ảnh do Flask lưu khi ESP32 gửi lên
+      const imageUrl = `http://localhost:5000${photoUrl}`;
+      imgEl.src = imageUrl;
 
-      // Sau 5 giây, quay lại chế độ tracking
-      recognitionTimeout = setTimeout(() => {
-        if (isStreamingFaceDetect) {
-          console.log('⏱️ Back to tracking mode');
-          trackingMode = 'yellow';
-          btnRecognize.textContent = '🔍 Nhận diện';
-          btnRecognize.disabled = false;
-          recognitionCooldown = false;
-        }
-      }, 5000);
+      // Dùng chung panel "Kết quả nhận diện" như nút bấm
+      const fakeResult = {
+        ok: true,
+        latency_ms: 'ESP32 Auto',
+        faces: [{
+          name: name,
+          matched: matched,
+          confidence: conf,
+          box: [0, 0, 100, 100] // box giả, chỉ để hiện text trong panel
+        }]
+      };
+      showFaceResult(fakeResult);
 
-      recognitionCooldown = true;
-      toast('Đang nhận diện khuôn mặt... (5s)');
-    }
+      // Vẽ viền quanh ảnh để biết đúng / sai
+      imgEl.onload = () => {
+        canvasEl.width = imgEl.width;
+        canvasEl.height = imgEl.height;
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
 
-    // Auto-recognition khi tracking ổn định
-    async function performAutoRecognition() {
-      if (recognitionCooldown) return;
+        ctx.strokeStyle = matched ? '#10b981' : '#ef4444'; // xanh = đúng, đỏ = sai
+        ctx.lineWidth = 6;
+        ctx.strokeRect(3, 3, canvasEl.width - 6, canvasEl.height - 6);
 
-      console.log('🤖 Auto-recognition triggered...');
-      trackingMode = 'recognition';
-      recognitionCooldown = true;
+        ctx.font = 'bold 20px Arial';
+        ctx.fillStyle = matched ? '#10b981' : '#ef4444';
+        const text = matched ? `✅ ${name} (${conf}%)` : '❌ Unknown';
+        ctx.fillText(text, 15, 35);
+      };
 
-      // Sau 3 giây, quay lại tracking
-      setTimeout(() => {
-        if (isStreamingFaceDetect) {
-          trackingMode = 'yellow';
-          recognitionCooldown = false;
-        }
-      }, 3000);
+      // 5s sau quay về stream
+      setTimeout(reloadCam, 5000);
     }
 
     async function capture() {
       try {
         const ip = getIP();
-        // Hiển thị khung từ ESP32 ngay lập tức
-        imgEl.src = capUrl(ip);
+        imgEl.src = `http://${ip}/capture`;
         setStatus('CAPTURING…', 'warn');
 
-        const j = await fetchJsonSafe(`${API_BASE}/esp32/capture?ip=${encodeURIComponent(ip)}`);
-        if (j.ok && j.url) {
-          imgEl.src = j.url; // xem ảnh đã lưu
-          setTimeout(reloadCam, 1200); // quay lại stream sau 1.2s
+        const res = await fetchJsonSafe(`${API_BASE}/esp32/capture?ip=${encodeURIComponent(ip)}`);
+        if (res.ok && res.url) {
+          imgEl.src = res.url;
+          setTimeout(reloadCam, 1200);
           setStatus('SAVED', 'ok');
         } else {
           setTimeout(reloadCam, 800);
-          setStatus(j.error || 'CAPTURE FAIL', 'err');
+          setStatus(res.error || 'CAPTURE FAIL', 'err');
         }
       } catch (e) {
-        console.error(e);
         toast('Lỗi chụp ảnh: ' + e.message);
         setTimeout(reloadCam, 800);
         setStatus('ERROR', 'err');
@@ -1252,42 +1066,26 @@
 
     async function autoTick() {
       if (autoBusy) return;
-      let ip;
       try {
-        ip = getIP();
-      } catch {
-        return;
-      } // invalid ip → bỏ qua lần này
+        const ip = getIP();
+        autoBusy = true;
+        const thr = Math.max(0, Math.min(100, parseFloat(autoThr.value || '5')));
+        const url = `${API_BASE}/esp32/auto-capture?ip=${encodeURIComponent(ip)}&thr=${thr}&delay=300&full=1`;
 
-      autoBusy = true;
-      const thr = Math.max(0, Math.min(100, parseFloat(autoThr.value || '7.5')));
-      const url = `${API_BASE}/esp32/auto-capture?ip=${encodeURIComponent(ip)}&thr=${thr}&delay=300&full=1`;
-
-      try {
-        const j = await fetchJsonSafe(url);
-
-        if (!j.ok) {
-          console.warn('auto_capture error:', j.error);
-          setStatus('AUTO ERR', 'err');
-
-          // Thiếu GD → chuyển sang simple mode 1 lần
-          if (j.error && j.error.includes('GD')) {
-            useSimple = true;
-            toast('Máy chủ thiếu GD → chuyển simple mode');
+        const res = await fetchJsonSafe(url);
+        if (res.ok) {
+          setStatus(`AUTO: ${res.score ?? 'N/A'}%`, 'ok');
+          if (res.captured && res.url) {
+            imgEl.src = res.url;
+            setTimeout(reloadCam, 1000);
           }
-          return;
-        }
-
-        setStatus(`AUTO: ${j.score ?? 'N/A'}%`, 'ok');
-
-        if (j.captured && j.url) {
-          const prev = imgEl.src;
-          imgEl.src = j.url;
-          setTimeout(reloadCam, 1000);
+        } else {
+          console.warn('auto_capture error:', res.error);
+          setStatus('AUTO ERR', 'err');
         }
       } catch (e) {
-        console.warn('auto_capture fetch fail:', e);
-        setStatus('AUTO HTTP ERR', 'err');
+        console.warn('auto_capture failed:', e.message);
+        setStatus('AUTO ERR', 'err');
       } finally {
         autoBusy = false;
       }

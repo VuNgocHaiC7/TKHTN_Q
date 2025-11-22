@@ -1,4 +1,5 @@
-// CameraWebServer_Q.ino — Face Unlock (LM393 trigger + auto WiFi reconnect + IR state)
+// CameraWebServer_Final_Full_NoLCD.ino
+// Face Unlock (LM393 trigger + auto WiFi + IR state + Servo)
 // Core ESP32 3.3.x
 
 #include <Arduino.h>
@@ -9,6 +10,9 @@
 #include "esp_http_client.h"
 #include <HTTPClient.h>
 
+// === THƯ VIỆN SERVO (GIỮ NGUYÊN) ===
+#include <ESP32Servo.h>
+
 // ================== WiFi ==================
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
@@ -18,17 +22,22 @@ static const char* BACKEND_URL = "http://10.80.115.224:5000/api/face-unlock";  /
 // Endpoint để báo trạng thái cảm biến cho backend / web.
 static const char* IR_STATE_URL = "http://10.80.115.224:5000/api/ir-state";
 
-// ================== Relay + LED ==================
-#define PIN_RELAY  2
-#define PIN_LED_OK 12
-#define PIN_LED_NG 13
+// ================== CẤU HÌNH CHÂN MỚI ==================
+// ĐÃ BỎ LCD, nên không cần SDA/SCL
+// Servo nối chân GPIO 2
+#define PIN_SERVO 2
 
-// ================== CẢM BIẾN HỒNG NGOẠI (LM393) ==================
-const int PIN_LM393 = 14;   // chọn chân không trùng LED/Relay (14 là an toàn)
+// CẢM BIẾN HỒNG NGOẠI (LM393) - Giữ nguyên
+const int PIN_LM393 = 14; 
+
+// KHỞI TẠO ĐỐI TƯỢNG
+Servo myDoorServo;
+
+// Cấu hình góc Servo
+const int POS_CLOSE = 0;   // Góc đóng
+const int POS_OPEN  = 90;  // Góc mở
 
 // QUAN TRỌNG: Kiểm tra module của bạn
-// - Nếu LED module SÁNG khi có người → đổi thành HIGH
-// - Nếu LED module TẮT khi có người → để LOW
 const int MOTION_ACTIVE_STATE = LOW;  // Thay HIGH nếu cần
 
 // Trạng thái xử lý nhận diện
@@ -44,7 +53,6 @@ unsigned long lastWifiTry = 0;
 const unsigned long WIFI_RETRY_EVERY = 10000; // 10s thử reconnect 1 lần
 
 // === NEW (IR STATE) ===
-// Enum trạng thái cảm biến để gửi về web
 enum IrStateEnum {
   IR_STATE_UNKNOWN = 0,
   IR_STATE_WAITING,
@@ -74,6 +82,7 @@ static void wifi_connect() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    delay(1500);
   } else {
     Serial.println("[WiFi] Connect FAILED.");
   }
@@ -91,8 +100,7 @@ static void ensureWifi() {
   wifi_connect();
 }
 
-// === NEW (IR STATE) ===
-// Gửi trạng thái LM393 về backend để giao diện web đọc
+// === NEW (IR STATE) - GIỮ NGUYÊN LOGIC CŨ ===
 static void send_ir_state(const char* state) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.printf("[IR] Skip send '%s' (WiFi down)\n", state);
@@ -100,6 +108,7 @@ static void send_ir_state(const char* state) {
   }
 
   HTTPClient http;
+  // GIỮ NGUYÊN URL NHƯ CODE CỦA BẠN
   String url = "http://10.80.115.224:5000/api/face-unlock?device_id=DOOR-01";
 
   http.begin(url);
@@ -114,7 +123,6 @@ static void send_ir_state(const char* state) {
   http.end();
 }
 
-// Chỉ gửi khi state thay đổi
 static void set_ir_state(IrStateEnum s) {
   if (s == g_lastIrState) return;
   g_lastIrState = s;
@@ -147,21 +155,25 @@ static bool camera_init_qvga() {
   cfg.pin_sscb_scl = SIOC_GPIO_NUM;
   cfg.pin_pwdn  = PWDN_GPIO_NUM;
   cfg.pin_reset = RESET_GPIO_NUM;
-  cfg.xclk_freq_hz = 20000000;
+  
+  // --- THAY ĐỔI Ở ĐÂY ---
+  cfg.xclk_freq_hz = 20000000; // Tăng lên 20MHz chuẩn
   cfg.pixel_format = PIXFORMAT_JPEG;
-  cfg.frame_size = FRAMESIZE_QVGA;
-  cfg.jpeg_quality = 12;
+
+  cfg.frame_size = FRAMESIZE_QVGA; // Giữ nguyên QVGA để nhận diện nhanh
+  cfg.jpeg_quality = 12;           // Giảm số này xuống (10-12) để ảnh NÉT hơn
   cfg.fb_count = 2;
 
   if (esp_camera_init(&cfg) != ESP_OK) return false;
   if (sensor_t* s = esp_camera_sensor_get()) {
     s->set_brightness(s, 0);
     s->set_saturation(s, 0);
+    s->set_contrast(s, 0);
   }
   return true;
 }
 
-// ================== LƯU LOG VÀO DATABASE ==================
+// ================== LƯU LOG VÀO DATABASE (GIỮ NGUYÊN) ==================
 static void save_log_to_db(bool recognized, const String &who, int confidence) {
   HTTPClient http;
   String logUrl = "http://10.80.115.224:5000/api/logs";
@@ -196,7 +208,7 @@ static void save_log_to_db(bool recognized, const String &who, int confidence) {
   http.end();
 }
 
-// ================== GỬI ẢNH LÊN BACKEND ==================
+// ================== GỬI ẢNH LÊN BACKEND (GIỮ NGUYÊN) ==================
 static bool post_frame_to_backend(bool &recognized, String &who, int &confidence) {
   recognized = false;
   who = "";
@@ -298,17 +310,17 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
 void setup() {
   Serial.begin(115200);
   Serial.println();
-  Serial.println("[BOOT] Face-Unlock + LM393 (IOT-style trigger + auto WiFi)");
+  Serial.println("[BOOT] Face-Unlock + Servo (No LCD)");
 
-  pinMode(PIN_RELAY,  OUTPUT);
-  pinMode(PIN_LED_OK, OUTPUT);
-  pinMode(PIN_LED_NG, OUTPUT);
-  pinMode(PIN_LM393,  INPUT); // hoặc INPUT_PULLUP tùy wiring thực tế
+  // 1. Khởi tạo Servo
+  myDoorServo.setPeriodHertz(50);    // chuẩn 50Hz
+  myDoorServo.attach(PIN_SERVO, 500, 2400); 
+  myDoorServo.write(POS_CLOSE);      // Đóng cửa ngay khi bật
 
-  digitalWrite(PIN_RELAY, LOW);
-  digitalWrite(PIN_LED_OK, LOW);
-  digitalWrite(PIN_LED_NG, LOW);
+  // 2. Cảm biến IR
+  pinMode(PIN_LM393, INPUT); 
 
+  // 3. Init Camera
   if (!camera_init_qvga()) {
     Serial.println("[ERR] Camera init FAIL → restart");
     delay(2000);
@@ -330,14 +342,12 @@ void setup() {
   int initialState = digitalRead(PIN_LM393);
   Serial.printf("[LM393] Trạng thái ban đầu: %s (pin=%d)\n",
     initialState == HIGH ? "HIGH" : "LOW", initialState);
-  Serial.printf("[LM393] Kích hoạt khi: %s\n",
-    MOTION_ACTIVE_STATE == HIGH ? "HIGH (module sáng khi có người)"
-                                : "LOW (module tắt khi có người)");
-  Serial.println("[LM393] Sẵn sàng phát hiện chuyển động...");
-
+  
   // === NEW (IR STATE) ===
   bool initialMotion = (initialState == MOTION_ACTIVE_STATE);
   set_ir_state(initialMotion ? IR_STATE_DETECTING : IR_STATE_WAITING);
+
+  Serial.println("[SYSTEM] Ready - Waiting IR...");
 }
 
 // ================== LOOP (trigger bằng LM393, style IOT + auto WiFi) ==================
@@ -357,13 +367,11 @@ void loop() {
   // Debug trạng thái định kỳ
   static unsigned long lastDebugPrint = 0;
   if (now - lastDebugPrint > 2000) {
-    Serial.printf("[DEBUG] Sensor=%s, Motion=%s, gateLocked=%s, Checking=%s, "
-                  "Cooldown=%lums, WiFi=%s\n",
+    Serial.printf("[DEBUG] Sensor=%s, Motion=%s, gateLocked=%s, Checking=%s, WiFi=%s\n",
       sensor == HIGH ? "HIGH" : "LOW",
       motionDetected ? "YES" : "NO",
       gateLocked ? "YES" : "NO",
       isChecking ? "YES" : "NO",
-      (now > lastTrigger) ? (now - lastTrigger) : 0,
       (WiFi.status() == WL_CONNECTED ? "OK" : "DOWN")
     );
     lastDebugPrint = now;
@@ -382,12 +390,11 @@ void loop() {
     Serial.println();
     Serial.println("========================================");
     Serial.println("[LM393] PHÁT HIỆN CHUYỂN ĐỘNG!");
-    Serial.println("[LM393] → Bắt đầu nhận diện khuôn mặt...");
-    Serial.println("========================================");
-
+    
     // Nếu chưa có WiFi thì bỏ qua lần này
     if (WiFi.status() != WL_CONNECTED) {
       Serial.println("[WiFi] NOT CONNECTED → bỏ qua lần nhận diện này.");
+      delay(2000);
       isChecking = false;
     } else {
       bool ok = false, recognized = false;
@@ -399,49 +406,32 @@ void loop() {
       if (!ok) {
         Serial.println("========================================");
         Serial.println("[ERR] Backend lỗi hoặc không phản hồi");
-        Serial.println("[ACTION] Chớp đỏ 1 lần");
-        Serial.println("========================================");
-        
-        digitalWrite(PIN_LED_NG, HIGH);
-        delay(200);
-        digitalWrite(PIN_LED_NG, LOW);
+        delay(2000);
       }
       else if (recognized) {
         Serial.println("========================================");
         Serial.println("✅ NHẬN DIỆN THÀNH CÔNG!");
         Serial.printf("👤 Tên: %s\n", who.c_str());
-        Serial.printf("📊 Độ chính xác: %d%%\n", confidence);
-        Serial.println("🚪 Mở cửa 2.5 giây...");
-        Serial.println("========================================");
-
+        
         // LƯU LOG VÀO DATABASE
         save_log_to_db(true, who, confidence);
 
-        // Bật LED xanh và relay
-        digitalWrite(PIN_LED_OK, HIGH);
-        digitalWrite(PIN_RELAY, HIGH);
-        delay(2500);
-        digitalWrite(PIN_RELAY, LOW);
-        digitalWrite(PIN_LED_OK, LOW);
+        // Mở Servo
+        myDoorServo.write(POS_OPEN);
+        delay(3000); // Giữ cửa mở 3s
+        
+        // Đóng cửa
+        myDoorServo.write(POS_CLOSE);
+        delay(1000);
       }
       else {
         Serial.println("========================================");
         Serial.println("❌ TỪ CHỐI!");
-        Serial.println("⚠️ Không nhận diện được khuôn mặt");
-        if (who.length() > 0) {
-          Serial.printf("ℹ️ Phát hiện: %s (độ chính xác thấp)\n", who.c_str());
-        }
-        Serial.println("🚫 Chớp đỏ 2 lần");
-        Serial.println("========================================");
-
+        
         // LƯU LOG VÀO DATABASE
         save_log_to_db(false, who, confidence);
 
-        // Chớp đỏ 2 lần
-        for (int i = 0; i < 2; i++) {
-          digitalWrite(PIN_LED_NG, HIGH); delay(120);
-          digitalWrite(PIN_LED_NG, LOW);  delay(120);
-        }
+        delay(2000); // Giữ thông báo từ chối (chỉ còn trên Serial)
       }
 
       Serial.printf("[DONE] Hoàn thành. Cooldown %lu giây\n\n", COOLDOWN_MS / 1000);
@@ -454,6 +444,6 @@ void loop() {
     gateLocked = false;
   }
 
-  // 5) Delay nhỏ để tránh đọc cảm biến quá dày, đỡ nhiễu
+  // 5) Delay nhỏ
   delay(40);
 }

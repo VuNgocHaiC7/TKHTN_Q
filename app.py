@@ -449,7 +449,97 @@ def draw_overlay():
     except Exception as e:
         return error_response(f'Draw error: {str(e)}', 500)
 
-@app.route('/api/logs', methods=['GET'])
+@app.route('/api/add-face', methods=['POST'])
+@app.route('/api/add_face', methods=['POST'])
+def add_face():
+    """
+    Add new face to database
+    Expects JSON with 'name' and 'image_url'
+    """
+    try:
+        data = request.get_json()
+        if not data:
+            return error_response('Missing JSON data', 400)
+        
+        name = data.get('name', '').strip()
+        image_url = data.get('image_url', '').strip()
+        
+        # Validate inputs
+        if not name:
+            return error_response('Name is required', 400)
+        
+        if not image_url:
+            return error_response('Image URL is required', 400)
+        
+        # Validate name (alphanumeric and spaces only)
+        import re
+        if not re.match(r'^[a-zA-Z0-9\s_-]+$', name):
+            return error_response('Name can only contain letters, numbers, spaces, hyphens and underscores', 400)
+        
+        # Download image from URL
+        try:
+            # Convert relative URL to full URL if needed
+            if image_url.startswith('/uploads/') or image_url.startswith('/Project_Q/public/uploads/'):
+                # Local file path - extract the relative path after /uploads/
+                if image_url.startswith('/Project_Q/public/uploads/'):
+                    relative_path = image_url.replace('/Project_Q/public/uploads/', '')
+                else:
+                    relative_path = image_url.replace('/uploads/', '')
+                
+                local_path = os.path.join(APP_CONFIG['upload_dir'], relative_path)
+                if not os.path.exists(local_path):
+                    return error_response(f'Image file not found: {local_path}', 404)
+                
+                with open(local_path, 'rb') as f:
+                    img_bytes = f.read()
+            else:
+                # Remote URL
+                response = requests.get(image_url, timeout=10)
+                if response.status_code != 200:
+                    return error_response('Cannot download image', 502)
+                img_bytes = response.content
+            
+            # Verify it's a valid image
+            img = Image.open(io.BytesIO(img_bytes))
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+        except Exception as e:
+            return error_response(f'Invalid image: {str(e)}', 400)
+        
+        # Create person directory in faces_db
+        faces_db_dir = APP_CONFIG['faces_db_dir']
+        person_dir = os.path.join(faces_db_dir, name)
+        
+        if not os.path.exists(person_dir):
+            os.makedirs(person_dir)
+        
+        # Generate unique filename
+        timestamp = int(time.time())
+        random_hex = binascii.hexlify(os.urandom(4)).decode()
+        filename = f"{timestamp}_{random_hex}.jpg"
+        
+        # Save image to person directory
+        dest_path = os.path.join(person_dir, filename)
+        img.save(dest_path, 'JPEG', quality=95)
+        
+        # Delete cache to force rebuild
+        cache_file = os.path.join(faces_db_dir, '.encodings_cache_v2.pkl')
+        if os.path.exists(cache_file):
+            os.unlink(cache_file)
+            print(f"[INFO] Deleted face encodings cache")
+        
+        return success_response({
+            'message': f'Face added successfully for {name}',
+            'name': name,
+            'filename': filename,
+            'path': dest_path
+        })
+        
+    except Exception as e:
+        return error_response(f'Server error: {str(e)}', 500)
+
+@app.route('/api/access-log', methods=['POST'])
 def get_logs():
     """Get access logs - Public endpoint for frontend polling"""
     limit = int(request.args.get('limit', 100))
@@ -462,9 +552,19 @@ def get_logs():
     
     return json_response({'ok': True, 'data': logs})
 
-@app.route('/api/logs', methods=['POST'])
-def create_log():
-    """Create log entry from ESP32 - Public endpoint"""
+@app.route('/api/logs', methods=['GET', 'POST'])
+def logs_endpoint():
+    """Handle both GET (query logs) and POST (create log) - Public endpoint"""
+    if request.method == 'GET':
+        # GET: Query logs with optional limit
+        limit = request.args.get('limit', 50, type=int)
+        logs = execute_query(
+            f'SELECT * FROM access_logs ORDER BY timestamp DESC LIMIT {limit}',
+            fetch_all=True
+        )
+        return json_response({'ok': True, 'data': logs})
+    
+    # POST: Create new log
     data = request.get_json() or request.form.to_dict()
     
     status = data.get('status', 'unknown')
@@ -728,6 +828,296 @@ def face_unlock_endpoint():
         return error_response('Recognition timeout', 500)
     except Exception as e:
         return error_response(f'Server error: {str(e)}', 500)
+
+# ==================== NEW FEATURES API ====================
+
+@app.route('/api/door/unlock', methods=['POST'])
+def emergency_unlock():
+    """Emergency door unlock"""
+    try:
+        # Get ESP32 IP
+        ip = get_esp_ip()
+        
+        # Send unlock command to ESP32
+        url = f"http://{ip}/control?var=unlock&val=1"
+        response = requests.get(url, timeout=3)
+        
+        if response.status_code == 200:
+            # Log the emergency unlock
+            execute_query(
+                '''INSERT INTO access_logs 
+                   (device_id, status, recognized_name, source, timestamp) 
+                   VALUES (1, 'granted', 'EMERGENCY_UNLOCK', 'manual', NOW())'''
+            )
+            return success_response({'message': 'Door unlocked successfully'})
+        else:
+            return error_response('Failed to unlock door', 500)
+    except Exception as e:
+        return error_response(f'Unlock error: {str(e)}', 500)
+
+@app.route('/api/door/status', methods=['GET'])
+def door_status():
+    """Get door status"""
+    try:
+        # Query last log to determine door status
+        log = execute_query(
+            '''SELECT status, timestamp FROM access_logs 
+               ORDER BY timestamp DESC LIMIT 1'''
+        )
+        
+        if log:
+            # If last access was within 5 seconds and granted, door is open
+            time_diff = (time.time() - log['timestamp'].timestamp()) if hasattr(log['timestamp'], 'timestamp') else 999
+            status = 'open' if (log['status'] == 'granted' and time_diff < 5) else 'closed'
+        else:
+            status = 'closed'
+            
+        return success_response({'status': status})
+    except Exception as e:
+        return error_response(f'Status error: {str(e)}', 500)
+
+@app.route('/api/faces', methods=['GET'])
+def get_faces():
+    """Get all registered faces"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        faces = []
+        
+        for person_dir in os.listdir(faces_dir):
+            person_path = os.path.join(faces_dir, person_dir)
+            if os.path.isdir(person_path):
+                # Get first image as thumbnail
+                images = [f for f in os.listdir(person_path) if f.endswith(('.jpg', '.png'))]
+                photo_url = None
+                if images:
+                    photo_url = f'/api/face-photo/{person_dir}'
+                
+                # Get creation date
+                stat = os.stat(person_path)
+                date = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_ctime))
+                
+                faces.append({
+                    'name': person_dir,
+                    'photo_url': photo_url,
+                    'date': date,
+                    'image_count': len(images)
+                })
+        
+        return success_response({'faces': faces})
+    except Exception as e:
+        return error_response(f'Load faces error: {str(e)}', 500)
+
+@app.route('/api/face-photo/<name>', methods=['GET'])
+def get_face_photo(name):
+    """Get face photo thumbnail"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        person_path = os.path.join(faces_dir, name)
+        
+        if not os.path.exists(person_path):
+            return error_response('Face not found', 404)
+        
+        # Get first image
+        images = [f for f in os.listdir(person_path) if f.endswith(('.jpg', '.png'))]
+        if not images:
+            return error_response('No photo found', 404)
+        
+        photo_path = os.path.join(person_path, images[0])
+        return send_file(photo_path, mimetype='image/jpeg')
+    except Exception as e:
+        return error_response(f'Photo error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>', methods=['PUT'])
+def update_face(name):
+    """Update face name"""
+    try:
+        data = request.get_json()
+        new_name = data.get('new_name', '').strip()
+        
+        if not new_name:
+            return error_response('New name required', 400)
+        
+        faces_dir = APP_CONFIG['faces_db_dir']
+        old_path = os.path.join(faces_dir, name)
+        new_path = os.path.join(faces_dir, new_name)
+        
+        if not os.path.exists(old_path):
+            return error_response('Face not found', 404)
+        
+        if os.path.exists(new_path):
+            return error_response('Name already exists', 400)
+        
+        # Rename directory
+        os.rename(old_path, new_path)
+        
+        # Rebuild cache
+        try:
+            subprocess.run(
+                [APP_CONFIG['python_bin'], 'public/tool/rebuild_cache_optimized.py'],
+                timeout=30,
+                check=False
+            )
+        except:
+            pass
+        
+        return success_response({'message': 'Face updated successfully'})
+    except Exception as e:
+        return error_response(f'Update error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>', methods=['DELETE'])
+def delete_face(name):
+    """Delete face"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        person_path = os.path.join(faces_dir, name)
+        
+        if not os.path.exists(person_path):
+            return error_response('Face not found', 404)
+        
+        # Delete directory and all images
+        import shutil
+        shutil.rmtree(person_path)
+        
+        # Rebuild cache
+        try:
+            subprocess.run(
+                [APP_CONFIG['python_bin'], 'public/tool/rebuild_cache_optimized.py'],
+                timeout=30,
+                check=False
+            )
+        except:
+            pass
+        
+        return success_response({'message': 'Face deleted successfully'})
+    except Exception as e:
+        return error_response(f'Delete error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>/images', methods=['GET'])
+def get_face_images(name):
+    """Get all images for a face"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        person_path = os.path.join(faces_dir, name)
+        
+        if not os.path.exists(person_path):
+            return error_response('Face not found', 404)
+        
+        images = []
+        for filename in os.listdir(person_path):
+            if filename.endswith(('.jpg', '.png', '.jpeg')):
+                images.append({
+                    'filename': filename,
+                    'url': f'/api/faces/{name}/images/{filename}'
+                })
+        
+        return success_response({'images': images, 'count': len(images)})
+    except Exception as e:
+        return error_response(f'Get images error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>/images/<filename>', methods=['GET'])
+def get_face_image(name, filename):
+    """Get specific image for a face"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        image_path = os.path.join(faces_dir, name, filename)
+        
+        if not os.path.exists(image_path):
+            return error_response('Image not found', 404)
+        
+        return send_file(image_path, mimetype='image/jpeg')
+    except Exception as e:
+        return error_response(f'Get image error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>/images/<filename>', methods=['DELETE'])
+def delete_face_image(name, filename):
+    """Delete specific image for a face"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        person_path = os.path.join(faces_dir, name)
+        image_path = os.path.join(person_path, filename)
+        
+        if not os.path.exists(person_path):
+            return error_response('Face not found', 404)
+        
+        if not os.path.exists(image_path):
+            return error_response('Image not found', 404)
+        
+        # Count remaining images
+        images = [f for f in os.listdir(person_path) if f.endswith(('.jpg', '.png', '.jpeg'))]
+        
+        if len(images) <= 1:
+            return error_response('Cannot delete last image. At least one image is required.', 400)
+        
+        # Delete the image
+        os.remove(image_path)
+        
+        # Rebuild cache
+        try:
+            subprocess.run(
+                [APP_CONFIG['python_bin'], 'public/tool/rebuild_cache_optimized.py'],
+                timeout=30,
+                check=False
+            )
+        except:
+            pass
+        
+        return success_response({'message': 'Image deleted successfully'})
+    except Exception as e:
+        return error_response(f'Delete image error: {str(e)}', 500)
+
+@app.route('/api/faces/<name>/images', methods=['POST'])
+def upload_face_images(name):
+    """Upload new images for a face"""
+    try:
+        faces_dir = APP_CONFIG['faces_db_dir']
+        person_path = os.path.join(faces_dir, name)
+        
+        if not os.path.exists(person_path):
+            return error_response('Face not found', 404)
+        
+        if 'images' not in request.files:
+            return error_response('No images provided', 400)
+        
+        files = request.files.getlist('images')
+        if not files:
+            return error_response('No images selected', 400)
+        
+        uploaded_count = 0
+        for file in files:
+            if file and file.filename:
+                # Generate unique filename
+                ext = os.path.splitext(file.filename)[1]
+                if ext.lower() not in ['.jpg', '.jpeg', '.png']:
+                    continue
+                
+                # Create unique filename with timestamp
+                timestamp = int(time.time() * 1000)
+                new_filename = f"{name}_{timestamp}_{uploaded_count}{ext}"
+                filepath = os.path.join(person_path, new_filename)
+                
+                # Save file
+                file.save(filepath)
+                uploaded_count += 1
+        
+        if uploaded_count == 0:
+            return error_response('No valid images uploaded', 400)
+        
+        # Rebuild cache
+        try:
+            subprocess.run(
+                [APP_CONFIG['python_bin'], 'public/tool/rebuild_cache_optimized.py'],
+                timeout=30,
+                check=False
+            )
+        except:
+            pass
+        
+        return success_response({
+            'message': f'{uploaded_count} images uploaded successfully',
+            'count': uploaded_count
+        })
+    except Exception as e:
+        return error_response(f'Upload error: {str(e)}', 500)
 
 # ==================== MAIN ====================
 

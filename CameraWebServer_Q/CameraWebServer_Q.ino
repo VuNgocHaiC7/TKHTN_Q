@@ -16,11 +16,11 @@
 // ================== WiFi ==================
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
-static const char* BACKEND_URL = "http://10.80.115.224:5000/api/face-unlock";  // Flask Python API
+static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  // Flask Python API
 
 // === NEW (IR STATE) ===
 // Endpoint để báo trạng thái cảm biến cho backend / web.
-static const char* IR_STATE_URL = "http://10.80.115.224:5000/api/ir-state";
+static const char* IR_STATE_URL = "http://10.87.241.224:5000/api/ir-state";
 
 // ================== CẤU HÌNH CHÂN MỚI ==================
 // ĐÃ BỎ LCD, nên không cần SDA/SCL
@@ -33,9 +33,9 @@ const int PIN_LM393 = 14;
 // KHỞI TẠO ĐỐI TƯỢNG
 Servo myDoorServo;
 
-// Cấu hình góc Servo
-const int POS_CLOSE = 0;   // Góc đóng
-const int POS_OPEN  = 90;  // Góc mở
+// Cấu hình góc Servo (ĐIỀU CHỈNH THEO SERVO CỦA BẠN)
+const int POS_CLOSE = 0;    // Góc đóng
+const int POS_OPEN  = 180;  // Góc mở (tăng lên để rõ ràng hơn)
 
 // QUAN TRỌNG: Kiểm tra module của bạn
 const int MOTION_ACTIVE_STATE = LOW;  // Thay HIGH nếu cần
@@ -46,7 +46,7 @@ bool isChecking = false;
 // Chống spam cảm biến theo style IOT (PIR)
 bool gateLocked = false;             // true = đã xử lý cho "đợt người này", chờ người rời đi
 unsigned long lastTrigger = 0;
-const unsigned long COOLDOWN_MS = 5000;   // 5s cooldown giữa các lần nhận diện
+const unsigned long COOLDOWN_MS = 10000;   // 10s cooldown giữa các lần nhận diện
 
 // Auto WiFi reconnect (giống IOT)
 unsigned long lastWifiTry = 0;
@@ -100,29 +100,7 @@ static void ensureWifi() {
   wifi_connect();
 }
 
-// === NEW (IR STATE) - GIỮ NGUYÊN LOGIC CŨ ===
-static void send_ir_state(const char* state) {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.printf("[IR] Skip send '%s' (WiFi down)\n", state);
-    return;
-  }
-
-  HTTPClient http;
-  // GIỮ NGUYÊN URL NHƯ CODE CỦA BẠN
-  String url = "http://10.80.115.224:5000/api/face-unlock?device_id=DOOR-01";
-
-  http.begin(url);
-  int code = http.GET();
-
-  if (code > 0) {
-    Serial.printf("[IR] Sent state=%s, http=%d\n", state, code);
-  } else {
-    Serial.printf("[IR] Send failed: %s\n", http.errorToString(code).c_str());
-  }
-
-  http.end();
-}
-
+// === IR STATE TRACKING - CHỈ ĐỂ DEBUG, KHÔNG GỌI API ===
 static void set_ir_state(IrStateEnum s) {
   if (s == g_lastIrState) return;
   g_lastIrState = s;
@@ -134,8 +112,9 @@ static void set_ir_state(IrStateEnum s) {
     default:                 text = "unknown";   break;
   }
 
-  Serial.printf("[IR] Change state → %s\n", text);
-  send_ir_state(text);
+  Serial.printf("[IR] State changed → %s\n", text);
+  // Không gửi HTTP request ở đây - chỉ log trạng thái
+  // Việc gửi ảnh để nhận diện sẽ được thực hiện trong loop() bằng post_frame_to_backend()
 }
 
 // ================== Camera Init ==================
@@ -176,7 +155,7 @@ static bool camera_init_qvga() {
 // ================== LƯU LOG VÀO DATABASE (GIỮ NGUYÊN) ==================
 static void save_log_to_db(bool recognized, const String &who, int confidence) {
   HTTPClient http;
-  String logUrl = "http://10.80.115.224:5000/api/logs";
+  String logUrl = "http://10.87.241.224:5000/api/logs";
   
   http.begin(logUrl);
   http.addHeader("Content-Type", "application/json");
@@ -316,6 +295,8 @@ void setup() {
   myDoorServo.setPeriodHertz(50);    // chuẩn 50Hz
   myDoorServo.attach(PIN_SERVO, 500, 2400); 
   myDoorServo.write(POS_CLOSE);      // Đóng cửa ngay khi bật
+  delay(500);                        // Đợi servo di chuyển xong
+  myDoorServo.detach();              // Ngắt PWM để tránh giật
 
   // 2. Cảm biến IR
   pinMode(PIN_LM393, INPUT); 
@@ -417,12 +398,45 @@ void loop() {
         save_log_to_db(true, who, confidence);
 
         // Mở Servo
+        Serial.println("[SERVO] Mở khóa...");
+        myDoorServo.attach(PIN_SERVO, 500, 2400);  // Kết nối lại servo
+        delay(100);                                 // Đợi attach ổn định
         myDoorServo.write(POS_OPEN);
-        delay(3000); // Giữ cửa mở 3s
+        delay(2000);                                // Đợi servo mở hoàn toàn
+        
+        Serial.println("[SERVO] Đã mở - chờ người vào...");
+        delay(3000); // Giữ cửa mở
+        
+        Serial.println("[SERVO] Đợi người rời khỏi cảm biến...");
+        unsigned long waitStart = millis();
+        const unsigned long MAX_WAIT = 10000;
+        
+        while (millis() - waitStart < MAX_WAIT) {
+          int currentSensor = digitalRead(PIN_LM393);
+          bool stillDetecting = (currentSensor == MOTION_ACTIVE_STATE);
+          
+          if (!stillDetecting) {
+            // Người đã rời đi, đợi thêm 500ms để chắc chắn
+            delay(500);
+            currentSensor = digitalRead(PIN_LM393);
+            if (currentSensor != MOTION_ACTIVE_STATE) {
+              Serial.println("[SERVO] Người đã rời đi!");
+              break;
+            }
+          }
+          
+          delay(100); // Kiểm tra mỗi 100ms
+        }
+        
+        if (millis() - waitStart >= MAX_WAIT) {
+          Serial.println("[SERVO] Timeout 10s - Đóng cửa dù vẫn phát hiện người!");
+        }
         
         // Đóng cửa
-        myDoorServo.write(POS_CLOSE);
-        delay(1000);
+        Serial.println("[SERVO] Đóng khóa...");
+        myDoorServo.write(POS_CLOSE);               // Servo vẫn còn attach từ trước
+        delay(2000);                                // Đợi servo đóng hoàn toàn
+        myDoorServo.detach();                       // Ngắt PWM để tránh giật
       }
       else {
         Serial.println("========================================");

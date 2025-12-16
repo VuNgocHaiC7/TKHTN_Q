@@ -862,7 +862,8 @@ def door_status():
         # Query last log to determine door status
         log = execute_query(
             '''SELECT status, timestamp FROM access_logs 
-               ORDER BY timestamp DESC LIMIT 1'''
+               ORDER BY timestamp DESC LIMIT 1''',
+            fetch_one=True
         )
         
         if log:
@@ -890,8 +891,7 @@ def get_faces():
                 images = [f for f in os.listdir(person_path) if f.endswith(('.jpg', '.png'))]
                 photo_url = None
                 if images:
-                    photo_url = f'/api/face-photo/{person_dir}'
-                
+                    photo_url = None
                 # Get creation date
                 stat = os.stat(person_path)
                 date = time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_ctime))

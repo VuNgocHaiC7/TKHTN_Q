@@ -2243,7 +2243,7 @@
 
         let html = '';
         res.faces.forEach(face => {
-          const photoUrl = face.photo_url || '/api/face-photo/' + face.name;
+          const photoUrl = face.photo_url || `${API_BASE}/face-photo/${face.name}`;
           html += `
             <div class="face-list-item" data-face-name="${face.name}">
               <img src="${photoUrl}" class="face-list-avatar" alt="${face.name}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22%3E%3Crect fill=%22%23667eea%22 width=%2250%22 height=%2250%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22 fill=%22white%22 font-size=%2220%22%3E${face.name[0]?.toUpperCase() || '?'}%3C/text%3E%3C/svg%3E'">

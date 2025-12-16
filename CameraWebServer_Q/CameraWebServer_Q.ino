@@ -1,5 +1,5 @@
-// CameraWebServer_Final_Full_NoLCD.ino
-// Face Unlock (LM393 trigger + auto WiFi + IR state + Servo)
+// CameraWebServer_Final_Full_LCD.ino
+// Face Unlock (LM393 + WiFi + IR State + Servo + LCD 16x2 I2C)
 // Core ESP32 3.3.x
 
 #include <Arduino.h>
@@ -10,49 +10,54 @@
 #include "esp_http_client.h"
 #include <HTTPClient.h>
 
-// === THƯ VIỆN SERVO (GIỮ NGUYÊN) ===
+// === THƯ VIỆN SERVO ===
 #include <ESP32Servo.h>
+
+// === THƯ VIỆN LCD I2C (MỚI) ===
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
 
 // ================== WiFi ==================
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
 static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  // Flask Python API
-
-// === NEW (IR STATE) ===
-// Endpoint để báo trạng thái cảm biến cho backend / web.
 static const char* IR_STATE_URL = "http://10.87.241.224:5000/api/ir-state";
 
-// ================== CẤU HÌNH CHÂN MỚI ==================
-// ĐÃ BỎ LCD, nên không cần SDA/SCL
-// Servo nối chân GPIO 2
+// ================== CẤU HÌNH CHÂN (ĐÃ ĐỔI) ==================
 #define PIN_SERVO 2
 
-// CẢM BIẾN HỒNG NGOẠI (LM393) - Giữ nguyên
-const int PIN_LM393 = 14; 
+// ĐỔI CHÂN IR SANG 13 ĐỂ DÙNG 14, 15 CHO I2C
+const int PIN_LM393 = 13; 
+
+// Cấu hình I2C cho ESP32-CAM (Sử dụng chân cũ của IR và chân SD)
+#define I2C_SDA 14
+#define I2C_SCL 15
 
 // KHỞI TẠO ĐỐI TƯỢNG
 Servo myDoorServo;
+// Địa chỉ I2C thường là 0x27 hoặc 0x3F. Nếu không lên chữ hãy thử đổi 0x3F
+LiquidCrystal_I2C lcd(0x27, 16, 2); 
 
-// Cấu hình góc Servo (ĐIỀU CHỈNH THEO SERVO CỦA BẠN)
-const int POS_CLOSE = 0;    // Góc đóng
-const int POS_OPEN  = 180;  // Góc mở (tăng lên để rõ ràng hơn)
+// Cấu hình góc Servo
+const int POS_CLOSE = 0;    
+const int POS_OPEN  = 180;  
 
 // QUAN TRỌNG: Kiểm tra module của bạn
-const int MOTION_ACTIVE_STATE = LOW;  // Thay HIGH nếu cần
+const int MOTION_ACTIVE_STATE = LOW;  
 
 // Trạng thái xử lý nhận diện
 bool isChecking = false;
 
-// Chống spam cảm biến theo style IOT (PIR)
-bool gateLocked = false;             // true = đã xử lý cho "đợt người này", chờ người rời đi
+// Chống spam cảm biến
+bool gateLocked = false;             
 unsigned long lastTrigger = 0;
-const unsigned long COOLDOWN_MS = 10000;   // 10s cooldown giữa các lần nhận diện
+const unsigned long COOLDOWN_MS = 10000;   
 
-// Auto WiFi reconnect (giống IOT)
+// Auto WiFi reconnect
 unsigned long lastWifiTry = 0;
-const unsigned long WIFI_RETRY_EVERY = 10000; // 10s thử reconnect 1 lần
+const unsigned long WIFI_RETRY_EVERY = 10000; 
 
-// === NEW (IR STATE) ===
+// === IR STATE ===
 enum IrStateEnum {
   IR_STATE_UNKNOWN = 0,
   IR_STATE_WAITING,
@@ -63,18 +68,21 @@ IrStateEnum g_lastIrState = IR_STATE_UNKNOWN;
 
 // ================== prototype ==================
 void startCameraServer();
-static void send_ir_state(const char* state);
 static void set_ir_state(IrStateEnum s);
+void showMessage(String line1, String line2); // Hàm hiển thị LCD
 
 // ================== WiFi ==================
 static void wifi_connect() {
   Serial.printf("[WiFi] Connecting to SSID: %s\n", WIFI_SSID);
+  
+  // Hiển thị LCD
+  showMessage("WiFi Connecting", "SSID: " + String(WIFI_SSID));
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   unsigned long t0 = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) { // tối đa 20s
+  while (WiFi.status() != WL_CONNECTED && millis() - t0 < 20000) { 
     delay(250);
     Serial.print(".");
   }
@@ -82,25 +90,27 @@ static void wifi_connect() {
 
   if (WiFi.status() == WL_CONNECTED) {
     Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    showMessage("WiFi Connected", WiFi.localIP().toString());
     delay(1500);
   } else {
     Serial.println("[WiFi] Connect FAILED.");
+    showMessage("WiFi Error", "Check Router!");
+    delay(2000);
   }
 }
 
-// Gọi ở mỗi vòng loop để tự reconnect nếu mất WiFi
 static void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
 
   unsigned long now = millis();
-  if (now - lastWifiTry < WIFI_RETRY_EVERY) return; // tránh spam connect liên tục
+  if (now - lastWifiTry < WIFI_RETRY_EVERY) return; 
 
   lastWifiTry = now;
-  Serial.println("[WiFi] Disconnected → retry wifi_connect()...");
+  Serial.println("[WiFi] Disconnected -> retry wifi_connect()...");
+  showMessage("WiFi Lost", "Reconnecting...");
   wifi_connect();
 }
 
-// === IR STATE TRACKING - CHỈ ĐỂ DEBUG, KHÔNG GỌI API ===
 static void set_ir_state(IrStateEnum s) {
   if (s == g_lastIrState) return;
   g_lastIrState = s;
@@ -111,10 +121,16 @@ static void set_ir_state(IrStateEnum s) {
     case IR_STATE_DETECTING: text = "detecting"; break;
     default:                 text = "unknown";   break;
   }
+  Serial.printf("[IR] State changed -> %s\n", text);
+}
 
-  Serial.printf("[IR] State changed → %s\n", text);
-  // Không gửi HTTP request ở đây - chỉ log trạng thái
-  // Việc gửi ảnh để nhận diện sẽ được thực hiện trong loop() bằng post_frame_to_backend()
+// ================== Helper LCD ==================
+void showMessage(String line1, String line2) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(line1);
+  lcd.setCursor(0, 1);
+  lcd.print(line2);
 }
 
 // ================== Camera Init ==================
@@ -135,12 +151,11 @@ static bool camera_init_qvga() {
   cfg.pin_pwdn  = PWDN_GPIO_NUM;
   cfg.pin_reset = RESET_GPIO_NUM;
   
-  // --- THAY ĐỔI Ở ĐÂY ---
-  cfg.xclk_freq_hz = 20000000; // Tăng lên 20MHz chuẩn
+  cfg.xclk_freq_hz = 20000000; 
   cfg.pixel_format = PIXFORMAT_JPEG;
 
-  cfg.frame_size = FRAMESIZE_QVGA; // Giữ nguyên QVGA để nhận diện nhanh
-  cfg.jpeg_quality = 12;           // Giảm số này xuống (10-12) để ảnh NÉT hơn
+  cfg.frame_size = FRAMESIZE_QVGA; 
+  cfg.jpeg_quality = 12;           
   cfg.fb_count = 2;
 
   if (esp_camera_init(&cfg) != ESP_OK) return false;
@@ -152,7 +167,7 @@ static bool camera_init_qvga() {
   return true;
 }
 
-// ================== LƯU LOG VÀO DATABASE (GIỮ NGUYÊN) ==================
+// ================== LƯU LOG & GỬI ẢNH ==================
 static void save_log_to_db(bool recognized, const String &who, int confidence) {
   HTTPClient http;
   String logUrl = "http://10.87.241.224:5000/api/logs";
@@ -160,7 +175,6 @@ static void save_log_to_db(bool recognized, const String &who, int confidence) {
   http.begin(logUrl);
   http.addHeader("Content-Type", "application/json");
   
-  // Tạo JSON payload
   String status = recognized ? "granted" : "denied";
   String name = recognized ? who : "Unknown";
   String payload = "{";
@@ -170,24 +184,10 @@ static void save_log_to_db(bool recognized, const String &who, int confidence) {
   payload += "\"source\":\"esp32_auto\"";
   payload += "}";
   
-  Serial.printf("[LOG] Saving to DB: %s\n", payload.c_str());
-  
-  int httpCode = http.POST(payload);
-  
-  if (httpCode > 0) {
-    Serial.printf("[LOG] Saved! HTTP %d\n", httpCode);
-    if (httpCode == 200 || httpCode == 201) {
-      String response = http.getString();
-      Serial.printf("[LOG] Response: %s\n", response.c_str());
-    }
-  } else {
-    Serial.printf("[LOG] Save failed: %s\n", http.errorToString(httpCode).c_str());
-  }
-  
+  http.POST(payload);
   http.end();
 }
 
-// ================== GỬI ẢNH LÊN BACKEND (GIỮ NGUYÊN) ==================
 static bool post_frame_to_backend(bool &recognized, String &who, int &confidence) {
   recognized = false;
   who = "";
@@ -195,92 +195,57 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
 
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
-    Serial.println("[CAM] Capture failed (fb == NULL)");
+    Serial.println("[CAM] Capture failed");
+    showMessage("Camera Error", "Capture Failed");
     return false;
   }
+
+  // Báo lên LCD đang gửi
+  showMessage("Analyzing...", "Please wait");
 
   HTTPClient http;
   http.begin(BACKEND_URL);
   http.addHeader("Content-Type", "image/jpeg");
-  http.setTimeout(10000); // 10s timeout
-
-  Serial.printf("[HTTP] POST %s (len=%u)\n", BACKEND_URL, fb->len);
+  http.setTimeout(10000); 
   
   int status = http.POST((uint8_t*)fb->buf, fb->len);
-  
-  Serial.printf("[HTTP] Status code: %d\n", status);
-
   String body;
-  if (status == 200) {
-    body = http.getString();
-    Serial.printf("[HTTP] Response length: %d bytes\n", body.length());
-  } else {
-    Serial.printf("[HTTP] Request FAILED. status=%d\n", status);
-    String error = http.getString();
-    if (error.length() > 0) {
-      Serial.printf("[HTTP] Error response: %s\n", error.c_str());
-    }
-  }
-
+  if (status == 200) body = http.getString();
+  
   http.end();
   esp_camera_fb_return(fb);
 
-  if (status != 200) {
-    Serial.printf("[ERR] HTTP status %d != 200\n", status);
-    return false;
-  }
+  if (status != 200 || body.length() == 0) return false;
 
-  if (body.length() == 0) {
-    Serial.println("[ERR] Response body is empty!");
-    return false;
-  }
-
-  Serial.println("========== RESPONSE BODY ==========");
-  Serial.println(body);
-  Serial.println("===================================");
-
-  // Phân tích JSON response
   String low = body;
   low.toLowerCase();
 
-  // Parse "recognized": true/false
   int recognizedIdx = low.indexOf("\"recognized\"");
   if (recognizedIdx >= 0) {
     int colonIdx = low.indexOf(':', recognizedIdx);
     int commaIdx = low.indexOf(',', colonIdx);
     if (commaIdx < 0) commaIdx = low.indexOf('}', colonIdx);
-    
     String recognizedVal = low.substring(colonIdx + 1, commaIdx);
     recognizedVal.trim();
     recognized = (recognizedVal == "true");
-  } else {
-    Serial.println("[WARN] Cannot find 'recognized' field in JSON");
   }
 
-  // Parse "name": "..."
   int nameIdx = low.indexOf("\"name\"");
   if (nameIdx >= 0) {
     int q1 = body.indexOf('"', nameIdx + 6);
     int q2 = body.indexOf('"', q1 + 1);
-    if (q1 > 0 && q2 > q1) {
-      who = body.substring(q1 + 1, q2);
-    }
+    if (q1 > 0 && q2 > q1) who = body.substring(q1 + 1, q2);
   }
 
-  // Parse "confidence": 95
   int confIdx = low.indexOf("\"confidence\"");
   if (confIdx >= 0) {
     int colonIdx = low.indexOf(':', confIdx);
     int commaIdx = low.indexOf(',', colonIdx);
     if (commaIdx < 0) commaIdx = low.indexOf('}', colonIdx);
-    
     String confVal = low.substring(colonIdx + 1, commaIdx);
     confVal.trim();
     confidence = confVal.toInt();
   }
-
-  Serial.printf("[PARSE] Recognized=%s, Name='%s', Confidence=%d%%\n", 
-    recognized ? "YES" : "NO", who.c_str(), confidence);
 
   return true;
 }
@@ -288,93 +253,79 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
 // ================== SETUP ==================
 void setup() {
   Serial.begin(115200);
-  Serial.println();
-  Serial.println("[BOOT] Face-Unlock + Servo (No LCD)");
+  
+  // 1. Khởi tạo LCD I2C
+  // QUAN TRỌNG: Định nghĩa chân SDA, SCL cho ESP32-CAM
+  Wire.begin(I2C_SDA, I2C_SCL); 
+  lcd.init();
+  lcd.backlight();
+  showMessage("System Booting", "Face Unlock v2");
+  delay(1000);
 
-  // 1. Khởi tạo Servo
-  myDoorServo.setPeriodHertz(50);    // chuẩn 50Hz
+  // 2. Khởi tạo Servo
+  myDoorServo.setPeriodHertz(50);    
   myDoorServo.attach(PIN_SERVO, 500, 2400); 
-  myDoorServo.write(POS_CLOSE);      // Đóng cửa ngay khi bật
-  delay(500);                        // Đợi servo di chuyển xong
-  myDoorServo.detach();              // Ngắt PWM để tránh giật
+  myDoorServo.write(POS_CLOSE);      
+  delay(500);                        
+  myDoorServo.detach();              
 
-  // 2. Cảm biến IR
+  // 3. Cảm biến IR (Chân 13)
   pinMode(PIN_LM393, INPUT); 
 
-  // 3. Init Camera
+  // 4. Init Camera
   if (!camera_init_qvga()) {
-    Serial.println("[ERR] Camera init FAIL → restart");
+    Serial.println("[ERR] Camera init FAIL");
+    showMessage("Camera Error", "Init Failed");
     delay(2000);
     ESP.restart();
   }
 
-  // Kết nối WiFi lần đầu
+  // Kết nối WiFi
   wifi_connect();
 
-  Serial.printf("[WiFi] %s - IP: %s\n",
-    WiFi.isConnected() ? "Connected" : "FAILED",
-    WiFi.localIP().toString().c_str()
-  );
-
   startCameraServer();
-  Serial.println("[HTTPD] Camera server started");
-
-  delay(100);
-  int initialState = digitalRead(PIN_LM393);
-  Serial.printf("[LM393] Trạng thái ban đầu: %s (pin=%d)\n",
-    initialState == HIGH ? "HIGH" : "LOW", initialState);
   
-  // === NEW (IR STATE) ===
+  int initialState = digitalRead(PIN_LM393);
   bool initialMotion = (initialState == MOTION_ACTIVE_STATE);
   set_ir_state(initialMotion ? IR_STATE_DETECTING : IR_STATE_WAITING);
 
-  Serial.println("[SYSTEM] Ready - Waiting IR...");
+  Serial.println("[SYSTEM] Ready");
+  showMessage("System Ready", "Waiting IR...");
 }
 
-// ================== LOOP (trigger bằng LM393, style IOT + auto WiFi) ==================
+// ================== LOOP ==================
 void loop() {
-  // 1) Luôn kiểm tra & tự reconnect WiFi
   ensureWifi();
 
-  // 2) Đọc cảm biến
   unsigned long now   = millis();
   int sensor          = digitalRead(PIN_LM393);
   bool motionDetected = (sensor == MOTION_ACTIVE_STATE);
 
-  // === NEW (IR STATE) ===
-  // Cập nhật trạng thái cho web: ĐANG CHỜ / ĐANG NHẬN DIỆN
   set_ir_state(motionDetected ? IR_STATE_DETECTING : IR_STATE_WAITING);
 
-  // Debug trạng thái định kỳ
-  static unsigned long lastDebugPrint = 0;
-  if (now - lastDebugPrint > 2000) {
-    Serial.printf("[DEBUG] Sensor=%s, Motion=%s, gateLocked=%s, Checking=%s, WiFi=%s\n",
-      sensor == HIGH ? "HIGH" : "LOW",
-      motionDetected ? "YES" : "NO",
-      gateLocked ? "YES" : "NO",
-      isChecking ? "YES" : "NO",
-      (WiFi.status() == WL_CONNECTED ? "OK" : "DOWN")
-    );
-    lastDebugPrint = now;
+  // Nếu phát hiện người, cập nhật LCD (nếu chưa đang check)
+  if (motionDetected && !isChecking && !gateLocked) {
+     showMessage("Motion Detected", "Scanning...");
+  } else if (!isChecking && !gateLocked && !motionDetected && (now - lastTrigger > 2000)) {
+     // Hiển thị trạng thái chờ nếu không làm gì
+     static unsigned long lastLcdUpdate = 0;
+     if (now - lastLcdUpdate > 5000) {
+        showMessage("System Ready", "Waiting...");
+        lastLcdUpdate = now;
+     }
   }
 
-  // 3) Nếu có chuyển động + chưa khóa + không bận + qua cooldown → xử lý
-  if (motionDetected &&
-      !gateLocked &&
-      !isChecking &&
-      (now - lastTrigger > COOLDOWN_MS)) {
+  // Xử lý logic chính
+  if (motionDetected && !gateLocked && !isChecking && (now - lastTrigger > COOLDOWN_MS)) {
 
-    gateLocked  = true;       // khóa lại cho đến khi người rời khỏi vùng cảm biến
+    gateLocked  = true;      
     lastTrigger = now;
     isChecking  = true;
 
-    Serial.println();
-    Serial.println("========================================");
-    Serial.println("[LM393] PHÁT HIỆN CHUYỂN ĐỘNG!");
+    Serial.println("[LM393] PHÁT HIỆN -> Bắt đầu nhận diện");
     
-    // Nếu chưa có WiFi thì bỏ qua lần này
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[WiFi] NOT CONNECTED → bỏ qua lần nhận diện này.");
+      showMessage("WiFi Error", "No Connection");
       delay(2000);
       isChecking = false;
     } else {
@@ -382,82 +333,69 @@ void loop() {
       String who;
       int confidence = 0;
 
+      // Hàm này đã có LCD "Analyzing..." bên trong
       ok = post_frame_to_backend(recognized, who, confidence);
 
       if (!ok) {
-        Serial.println("========================================");
-        Serial.println("[ERR] Backend lỗi hoặc không phản hồi");
+        showMessage("Server Error", "No Response");
         delay(2000);
       }
       else if (recognized) {
-        Serial.println("========================================");
         Serial.println("✅ NHẬN DIỆN THÀNH CÔNG!");
-        Serial.printf("👤 Tên: %s\n", who.c_str());
         
-        // LƯU LOG VÀO DATABASE
+        // Hiển thị LCD Chào mừng
+        showMessage("Welcome:", who);
+        
         save_log_to_db(true, who, confidence);
 
         // Mở Servo
-        Serial.println("[SERVO] Mở khóa...");
-        myDoorServo.attach(PIN_SERVO, 500, 2400);  // Kết nối lại servo
-        delay(100);                                 // Đợi attach ổn định
+        myDoorServo.attach(PIN_SERVO, 500, 2400); 
+        delay(100);                               
         myDoorServo.write(POS_OPEN);
-        delay(2000);                                // Đợi servo mở hoàn toàn
         
-        Serial.println("[SERVO] Đã mở - chờ người vào...");
-        delay(3000); // Giữ cửa mở
+        // Thông báo mở cửa
+        delay(1000);
+        showMessage("Door Opened", "Please Enter");
+
+        delay(2000);                               
         
-        Serial.println("[SERVO] Đợi người rời khỏi cảm biến...");
+        // Chờ người đi qua (giữ nguyên logic cũ)
         unsigned long waitStart = millis();
         const unsigned long MAX_WAIT = 10000;
         
         while (millis() - waitStart < MAX_WAIT) {
           int currentSensor = digitalRead(PIN_LM393);
-          bool stillDetecting = (currentSensor == MOTION_ACTIVE_STATE);
-          
-          if (!stillDetecting) {
-            // Người đã rời đi, đợi thêm 500ms để chắc chắn
+          if (currentSensor != MOTION_ACTIVE_STATE) {
             delay(500);
-            currentSensor = digitalRead(PIN_LM393);
-            if (currentSensor != MOTION_ACTIVE_STATE) {
-              Serial.println("[SERVO] Người đã rời đi!");
-              break;
-            }
+            if (digitalRead(PIN_LM393) != MOTION_ACTIVE_STATE) break;
           }
-          
-          delay(100); // Kiểm tra mỗi 100ms
-        }
-        
-        if (millis() - waitStart >= MAX_WAIT) {
-          Serial.println("[SERVO] Timeout 10s - Đóng cửa dù vẫn phát hiện người!");
+          delay(100);
         }
         
         // Đóng cửa
-        Serial.println("[SERVO] Đóng khóa...");
-        myDoorServo.write(POS_CLOSE);               // Servo vẫn còn attach từ trước
-        delay(2000);                                // Đợi servo đóng hoàn toàn
-        myDoorServo.detach();                       // Ngắt PWM để tránh giật
+        showMessage("Door Closing", "Goodbye!");
+        myDoorServo.write(POS_CLOSE);              
+        delay(2000);                                
+        myDoorServo.detach();                       
       }
       else {
-        Serial.println("========================================");
         Serial.println("❌ TỪ CHỐI!");
         
-        // LƯU LOG VÀO DATABASE
+        // Hiển thị LCD Từ chối
+        showMessage("Access Denied", "Unknown Face");
+        
         save_log_to_db(false, who, confidence);
-
-        delay(2000); // Giữ thông báo từ chối (chỉ còn trên Serial)
+        delay(3000); // Giữ thông báo lâu chút để người dùng đọc
       }
 
-      Serial.printf("[DONE] Hoàn thành. Cooldown %lu giây\n\n", COOLDOWN_MS / 1000);
       isChecking = false;
+      showMessage("System Ready", "Waiting...");
     }
   }
 
-  // 4) Khi cảm biến KHÔNG còn ở trạng thái ACTIVE → mở khóa gateLocked cho lượt tiếp theo
   if (!motionDetected) {
     gateLocked = false;
   }
 
-  // 5) Delay nhỏ
   delay(40);
 }

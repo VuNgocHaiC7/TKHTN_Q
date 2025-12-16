@@ -19,7 +19,7 @@ def get_connection_pool():
     if _connection_pool is None:
         _connection_pool = pooling.MySQLConnectionPool(
             pool_name="project_q_pool",
-            pool_size=5,
+            pool_size=20,  # Tăng pool size từ 5 lên 20
             pool_reset_session=True,
             host=DB_CONFIG['host'],
             port=DB_CONFIG['port'],
@@ -56,12 +56,18 @@ def execute_query(query, params=None, fetch_one=False, fetch_all=False):
         cursor.execute(query, params or ())
         
         if fetch_one:
-            return cursor.fetchone()
+            result = cursor.fetchone()
         elif fetch_all:
-            return cursor.fetchall()
+            result = cursor.fetchall()
         else:
             conn.commit()
-            return cursor.lastrowid
+            result = cursor.lastrowid
+        
+        return result
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise e
     finally:
         if cursor:
             cursor.close()

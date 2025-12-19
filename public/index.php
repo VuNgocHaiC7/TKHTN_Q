@@ -52,7 +52,7 @@
           <div class="controls">
             <div class="grid">
               <button id="btn_reload" class="btn">🔄 Tải lại</button>
-              <button id="btn_recognize" class="btn" style="background: linear-gradient(135deg, #10b981, #059669);">🔍 Nhận diện</button>
+              <button id="btn_recognize" class="btn" style="background: linear-gradient(135deg, #10b981, #059669);">🔍 Test Nhận diện</button>
             </div>
             <button id="btn_emergency_unlock" class="btn btn-emergency">
               🚨 MỞ KHÓA NGAY
@@ -72,17 +72,6 @@
       </div>
 
       <div class="right-panel">
-        <!-- Điều khiển LED -->
-        <div class="card">
-          <h2 class="card-title">💡 Điều khiển Đèn Flash</h2>
-          <div class="control-section">
-            <div class="led-control">
-              <button id="btn_led_on" class="btn btn-led">💡 BẬT ĐÈN</button>
-              <button id="btn_led_off" class="btn btn-led">🌙 TẮT ĐÈN</button>
-            </div>
-          </div>
-        </div>
-
         <!-- Thêm khuôn mặt -->
         <div class="card">
           <h2 class="card-title">➕ Thêm khuôn mặt mới</h2>
@@ -158,21 +147,23 @@
         </div>
 
         <div class="tutorial-section">
-          <h3>🔍 3. Nhận Diện Khuôn Mặt</h3>
-          <p>• Nhấn nút "🔍 Nhận diện" để kiểm tra khuôn mặt</p>
-          <p>• Nếu khớp, cửa sẽ tự động mở</p>
-          <p>• Kết quả nhận diện sẽ hiển thị bên dưới camera</p>
+          <h3>🔍 3. Test Nhận Diện Khuôn Mặt</h3>
+          <p>• Nhấn nút "🔍 Test Nhận diện" để kiểm tra khả năng nhận diện</p>
+          <p>• Chế độ này CHỈ hiển thị kết quả, KHÔNG mở khóa cửa</p>
+          <p>• Dùng để đánh giá và kiểm tra hệ thống nhận diện</p>
+          <p>• Kết quả hiển thị độ chính xác và tên người được nhận diện</p>
         </div>
 
         <div class="tutorial-section">
-          <h3>💡 4. Điều Khiển Đèn Flash</h3>
-          <p>• Sử dụng "💡 BẬT ĐÈN" để bật đèn hỗ trợ</p>
-          <p>• Sử dụng "🌙 TẮT ĐÈN" để tắt đèn</p>
-          <p>• Hữu ích khi chụp trong điều kiện thiếu sáng</p>
+          <h3>🚪 4. Nhận Diện Tự Động (Cảm Biến)</h3>
+          <p>• Khi có người đứng trước cửa, cảm biến sẽ kích hoạt</p>
+          <p>• Hệ thống tự động nhận diện khuôn mặt</p>
+          <p>• Nếu khớp, cửa sẽ TỰ ĐỘNG mở</p>
+          <p>• Lịch sử nhận diện được lưu lại tự động</p>
         </div>
 
         <div class="tutorial-section">
-          <h3>👥 5. Quản Lý Khuôn Mặt</h3>
+          <h3>� 4. Quản Lý Khuôn Mặt</h3>
           <p>• Xem danh sách tất cả khuôn mặt đã lưu</p>
           <p>• Nhấn "📸" để quản lý ảnh của từng người</p>
           <p>• Nhấn "✏️" để đổi tên</p>
@@ -183,6 +174,8 @@
           <h3>🚨 6. Mở Khóa Khẩn Cấp</h3>
           <p>• Sử dụng nút "🚨 MỞ KHÓA NGAY" khi cần thiết</p>
           <p>• Cửa sẽ mở ngay lập tức không cần nhận diện</p>
+          <p>• Hữu ích trong trường hợp khẩn cấp hoặc camera bị lỗi</p>
+          <p>• Hệ thống sẽ ghi lại lịch sử mở khóa khẩn cấp</p>
         </div>
       </div>
     </div>
@@ -192,6 +185,9 @@
   <button id="help_button" class="floating-help-btn" onclick="openTutorial()" title="Hướng dẫn sử dụng">
     ❓
   </button>
+
+  <!-- Notification Popup Container -->
+  <div id="notification_container" class="notification-container"></div>
 
   </div>
 </body>
@@ -473,12 +469,19 @@
   }
 
   .ipaddress input {
-    width: 150px;
+    width: 180px;
     height: 38px;
     border-radius: 10px;
     border: 2px solid #e5e7eb;
-    font-size: 14px;
+    font-size: 13px;
     padding: 0 12px;
+    transition: all 0.3s ease;
+  }
+
+  .ipaddress input:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
   }
 
   .chk {
@@ -1607,12 +1610,232 @@
   ::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(135deg, #764ba2, #667eea);
   }
+
+  /* ==================== NOTIFICATION POPUP ==================== */
+  .notification-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    pointer-events: none;
+  }
+
+  .notification-popup {
+    min-width: 380px;
+    max-width: 450px;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    pointer-events: all;
+    animation: slideDown 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+    overflow: hidden;
+    border: 3px solid;
+  }
+
+  .notification-popup.success {
+    border-color: #10b981;
+    background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);
+  }
+
+  .notification-popup.error {
+    border-color: #ef4444;
+    background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+  }
+
+  .notification-popup::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 6px;
+    height: 100%;
+    background: linear-gradient(180deg, #10b981, #059669);
+  }
+
+  .notification-popup.error::before {
+    background: linear-gradient(180deg, #ef4444, #dc2626);
+  }
+
+  .notification-icon {
+    font-size: 48px;
+    line-height: 1;
+    animation: bounceIn 0.6s ease;
+    flex-shrink: 0;
+  }
+
+  .notification-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .notification-title {
+    font-size: 18px;
+    font-weight: 800;
+    color: #1f2937;
+    letter-spacing: -0.3px;
+  }
+
+  .notification-popup.success .notification-title {
+    color: #065f46;
+  }
+
+  .notification-popup.error .notification-title {
+    color: #991b1b;
+  }
+
+  .notification-message {
+    font-size: 14px;
+    color: #6b7280;
+    font-weight: 500;
+  }
+
+  .notification-details {
+    font-size: 12px;
+    color: #9ca3af;
+    margin-top: 4px;
+    font-weight: 600;
+  }
+
+  .notification-image {
+    width: 70px;
+    height: 70px;
+    border-radius: 12px;
+    object-fit: cover;
+    border: 3px solid rgba(255, 255, 255, 0.8);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    flex-shrink: 0;
+  }
+
+  .notification-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0, 0, 0, 0.1);
+    border: none;
+    border-radius: 50%;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 18px;
+    color: #6b7280;
+    transition: all 0.2s;
+  }
+
+  .notification-close:hover {
+    background: rgba(0, 0, 0, 0.2);
+    transform: rotate(90deg);
+  }
+
+  .notification-popup.hiding {
+    animation: slideUp 0.3s ease forwards;
+  }
+
+  @keyframes slideDown {
+    from {
+      opacity: 0;
+      transform: translateY(-100px) scale(0.8);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+
+    to {
+      opacity: 0;
+      transform: translateY(-50px) scale(0.9);
+    }
+  }
+
+  @keyframes bounceIn {
+    0% {
+      transform: scale(0);
+    }
+
+    50% {
+      transform: scale(1.2);
+    }
+
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  /* Progress bar */
+  .notification-progress {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    height: 4px;
+    background: linear-gradient(90deg, #10b981, #059669);
+    width: 100%;
+    animation: shrink 5s linear forwards;
+  }
+
+  .notification-popup.error .notification-progress {
+    background: linear-gradient(90deg, #ef4444, #dc2626);
+  }
+
+  @keyframes shrink {
+    from {
+      width: 100%;
+    }
+
+    to {
+      width: 0%;
+    }
+  }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .notification-container {
+      right: 10px;
+      left: 10px;
+      top: 10px;
+    }
+
+    .notification-popup {
+      min-width: unset;
+      max-width: unset;
+      width: 100%;
+    }
+
+    .notification-icon {
+      font-size: 36px;
+    }
+
+    .notification-image {
+      width: 60px;
+      height: 60px;
+    }
+  }
 </style>
 
 <script>
   (() => {
     // ====== CONFIG ======
-    const API_BASE = 'http://localhost:5000/api';
+    // Tự động lấy hostname từ URL hiện tại để hoạt động với cả localhost và IP
+    const API_BASE = `http://${window.location.hostname}:5000/api`;
     const SEL = s => document.querySelector(s);
 
     // DOM Elements
@@ -1624,9 +1847,6 @@
     const btnEnroll = SEL('#btn_enroll');
     const btnRecognize = SEL('#btn_recognize');
     const btnEmergencyUnlock = SEL('#btn_emergency_unlock');
-    const btnLedOn = SEL('#btn_led_on');
-    const btnLedOff = SEL('#btn_led_off');
-    const doorStatusEl = SEL('#door_status');
     const faceListEl = SEL('#face_list');
     const historyListEl = SEL('#history_list');
     const canvasEl = SEL('#cam_canvas');
@@ -1644,11 +1864,51 @@
     let autoBusy = false;
     let autoTimer = null;
     let sensorPopupTimer = null;
-    let doorStatusTimer = null;
 
 
     // ====== UTILITY FUNCTIONS ======
     const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // ====== NOTIFICATION POPUP SYSTEM ======
+    function showNotification(options) {
+      const {
+        type = 'success', // 'success' or 'error'
+          title = '',
+          message = '',
+          details = '',
+          imageUrl = null,
+          duration = 5000
+      } = options;
+
+      const container = document.getElementById('notification_container');
+      if (!container) return;
+
+      // Tạo notification element
+      const notification = document.createElement('div');
+      notification.className = `notification-popup ${type}`;
+
+      const icon = type === 'success' ? '✅' : '❌';
+
+      notification.innerHTML = `
+        <div class="notification-icon">${icon}</div>
+        <div class="notification-content">
+          <div class="notification-title">${title}</div>
+          <div class="notification-message">${message}</div>
+          ${details ? `<div class="notification-details">${details}</div>` : ''}
+        </div>
+        ${imageUrl ? `<img src="${imageUrl}" class="notification-image" alt="Photo">` : ''}
+        <button class="notification-close" onclick="this.parentElement.remove()">✕</button>
+        <div class="notification-progress"></div>
+      `;
+
+      container.appendChild(notification);
+
+      // Tự động xóa sau duration
+      setTimeout(() => {
+        notification.classList.add('hiding');
+        setTimeout(() => notification.remove(), 300);
+      }, duration);
+    }
 
     function toast(msg, ms = 2500) {
       const toast = document.createElement('div');
@@ -1704,22 +1964,37 @@
     }
 
     // ====== SENSOR (LM393) FUNCTIONS ======
+    let lastIrState = 'waiting';
+    let isProcessingDetection = false;
+
     async function checkIrState() {
       try {
         const res = await fetchJsonSafe(`${API_BASE}/ir-state`);
         const state = (res.state || '').toLowerCase();
 
-        if (state === 'detecting') {
-          // LM393 đang sáng → ESP32 đang chụp / gửi ảnh
+        if (state === 'detecting' && lastIrState !== 'detecting' && !isProcessingDetection) {
+          isProcessingDetection = true;
+          setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
+          sensorIcon.textContent = '🔍';
+
+          performAutoFaceDetection().catch((err) => {
+            console.error('Auto detection error:', err);
+          }).finally(() => {
+            isProcessingDetection = false;
+          });
+
+        } else if (state === 'detecting') {
           setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
           sensorIcon.textContent = '🔍';
         } else {
-          // Mặc định: waiting
           setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
           sensorIcon.textContent = '📡';
         }
+
+        lastIrState = state;
+
       } catch (e) {
-        console.warn('IR state error:', e);
+        console.error('❌ IR state error:', e);
         setSensorStatus('⚠️ OFFLINE', 'err', '');
         sensorIcon.textContent = '📡';
       }
@@ -1766,15 +2041,41 @@
         // Hiện panel kết quả
         showFaceResult(fakeResult);
 
-        // Cập nhật badge cảm biến
+        // Tạo URL ảnh đầy đủ nếu có
+        let photoUrl = null;
+        if (latest.photo_url) {
+          if (latest.photo_url.startsWith('/uploads')) {
+            photoUrl = `http://${window.location.hostname}:5000${latest.photo_url}`;
+          } else {
+            photoUrl = latest.photo_url;
+          }
+        }
+
+        // Hiển thị notification popup
         if (ok) {
+          showNotification({
+            type: 'success',
+            title: '🎉 Nhận Diện Thành Công!',
+            message: `Xin chào ${name}`,
+            details: `Độ chính xác: ${conf}% • Cửa đã mở`,
+            imageUrl: photoUrl,
+            duration: 5000
+          });
+
           setSensorStatus(`✅ ${name} (${conf}%)`, 'detected', 'active');
           sensorIcon.textContent = '✅';
-          toast(`✅ Cho phép: ${name} (${conf}%)`, 3000);
         } else {
+          showNotification({
+            type: 'error',
+            title: '⛔ Truy Cập Bị Từ Chối',
+            message: 'Không nhận diện được khuôn mặt',
+            details: `Độ chính xác: ${conf}% • Vui lòng thử lại`,
+            imageUrl: photoUrl,
+            duration: 5000
+          });
+
           setSensorStatus('❌ Unknown', 'err', 'detecting');
           sensorIcon.textContent = '❌';
-          toast('❌ Không nhận diện được', 3000);
         }
 
         // Nếu trước đó đã có timer thì huỷ
@@ -1808,46 +2109,37 @@
     function startSensorPolling() {
       if (sensorTimer) return;
 
-      console.log('🚀 Start LM393 sensor polling (IR state + logs)…');
-      // Khi bắt đầu: hiển thị đang kết nối
       setSensorStatus('🔄 ĐANG KẾT NỐI...', '', '');
       sensorIcon.textContent = '📡';
 
-      // Gộp 2 việc vào một interval
+      // Tăng thời gian lên 2000ms để giảm tải cho camera
       const loop = () => {
-        checkIrState(); // trạng thái ĐANG CHỜ / ĐANG NHẬN DIỆN / OFFLINE
-        checkSensorLog(); // nếu có log mới từ ESP32 → popup/toast
+        checkIrState();
+        checkSensorLog();
       };
 
-      sensorTimer = setInterval(loop, 800);
-      loop(); // chạy lần đầu ngay lập tức
+      sensorTimer = setInterval(loop, 2000);
+      loop();
     }
 
     function stopSensorPolling() {
       if (!sensorTimer) return;
       clearInterval(sensorTimer);
       sensorTimer = null;
-      console.log('⏸️ Stop LM393 sensor polling');
       setSensorStatus('⏸️ TẠM DỪNG', 'idle', '');
       sensorIcon.textContent = '📡';
     }
 
     async function performAutoFaceDetection() {
-      // Tự động nhận diện giống y hệt button "Nhận diện khuôn mặt"
-      console.log('🤖 Auto face detection triggered by LM393 sensor');
-
       try {
         const ip = getIP();
-
-        // Hiển thị trạng thái đang nhận diện
         setSensorStatus('🔍 ĐANG NHẬN DIỆN...', 'recognizing', 'detecting');
         setStatus('AUTO DETECTING…', 'warn');
 
-        // Bước 1: Gọi API nhận diện (GIỐNG Y HỆT BUTTON)
         const faceRes = await fetchJsonSafe(`${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`);
 
         if (!faceRes.ok) {
-          console.warn('Auto detection failed:', faceRes.error);
+          setSensorStatus('❌ LỖI NHẬN DIỆN', 'err', '');
           return;
         }
 
@@ -1855,15 +2147,13 @@
         const matchedCount = faceRes.faces ? faceRes.faces.filter(f => f.matched).length : 0;
 
         if (faceCount === 0) {
-          console.log('No face detected in auto mode');
+          setSensorStatus('⚠️ KHÔNG THẤY KHUÔN MẶT', 'idle', '');
           return;
         }
 
-        // Bước 2: Lấy ảnh gốc
         const imgRes = await fetch(`${API_BASE}/esp32-capture?ip=${encodeURIComponent(ip)}`);
         const imgBlob = await imgRes.blob();
 
-        // Bước 3: Vẽ khung lên ảnh (GIỐNG Y HỆT BUTTON)
         const boxesParam = encodeURIComponent(JSON.stringify(faceRes));
         const overlayRes = await fetch(`${API_BASE}/draw-overlay?boxes=${boxesParam}`, {
           method: 'POST',
@@ -1876,27 +2166,28 @@
         if (overlayRes.ok) {
           const overlayBlob = await overlayRes.blob();
           imgEl.src = URL.createObjectURL(overlayBlob);
-
-          // Hiển thị panel kết quả (GIỐNG Y HỆT BUTTON)
           showFaceResult(faceRes);
+          loadHistory();
 
-          // Toast notification
           if (matchedCount > 0) {
-            const names = faceRes.faces
-              .filter(f => f.matched)
-              .map(f => f.name)
-              .join(', ');
-            toast(`🎯 LM393: Phát hiện ${names}`, 3000);
+            const names = faceRes.faces.filter(f => f.matched).map(f => f.name).join(', ');
+            toast(`🎯 ${names}`, 2500);
+            setSensorStatus(`✅ ${names}`, 'detected', 'active');
+            sensorIcon.textContent = '✅';
           } else {
-            toast(`⚠️ LM393: Phát hiện ${faceCount} mặt nhưng không nhận diện được`, 3000);
+            setSensorStatus('❌ Unknown', 'err', 'detecting');
+            sensorIcon.textContent = '❌';
           }
 
-          // Quay lại stream sau 5 giây
-          setTimeout(reloadCam, 5000);
+          setTimeout(() => {
+            reloadCam();
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+          }, 5000);
         }
-
       } catch (e) {
-        console.error('Auto face detection error:', e);
+        console.error('Auto detection error:', e);
+        setSensorStatus('❌ LỖI', 'err', '');
       }
     }
 
@@ -1904,6 +2195,7 @@
     function reloadCam() {
       try {
         const ip = getIP();
+        // ESP32 chỉ hỗ trợ HTTP
         imgEl.src = `http://${ip}:81/stream`;
         setStatus('STREAM', 'ok');
         imgEl.onload = () => {
@@ -2007,8 +2299,8 @@
 
       if (!photoUrl) return; // không có ảnh thì thôi
 
-      // Ảnh do Flask lưu khi ESP32 gửi lên
-      const imageUrl = `http://localhost:5000${photoUrl}`;
+      // Ảnh do Flask lưu khi ESP32 gửi lên - tự động dùng hostname hiện tại
+      const imageUrl = `http://${window.location.hostname}:5000${photoUrl}`;
       imgEl.src = imageUrl;
 
       // Dùng chung panel "Kết quả nhận diện" như nút bấm
@@ -2157,7 +2449,17 @@
         statusDiv.className = 'add-face-status show success';
         setStatus('FACE ADDED', 'ok');
 
-        toast(`✅ Đã thêm khuôn mặt "${name}" vào hệ thống!`, 3000);
+        // Hiển thị notification popup
+        showNotification({
+          type: 'success',
+          title: '👤 Thêm Khuôn Mặt Thành Công!',
+          message: `Đã lưu "${name}" vào hệ thống`,
+          details: 'Bạn có thể sử dụng khuôn mặt này để mở khóa',
+          duration: 5000
+        });
+
+        // Reload face list
+        loadFaceList();
 
         // Clear input after 2 seconds
         setTimeout(() => {
@@ -2171,7 +2473,15 @@
         statusDiv.textContent = '❌ Lỗi: ' + e.message;
         statusDiv.className = 'add-face-status show error';
         setStatus('ERROR', 'err');
-        toast('Lỗi thêm khuôn mặt: ' + e.message);
+
+        // Hiển thị notification popup lỗi
+        showNotification({
+          type: 'error',
+          title: '❌ Lỗi Thêm Khuôn Mặt',
+          message: e.message,
+          details: 'Vui lòng thử lại sau',
+          duration: 5000
+        });
       }
     }
 
@@ -2179,7 +2489,7 @@
       try {
         const ip = getIP();
         setStatus('DETECTING…', 'warn');
-        setSensorStatus('🔍 ĐANG NHẬN DIỆN', 'recognizing', 'detecting');
+        setSensorStatus('🔍 ĐANG NHẬN DIỆN (TEST)', 'recognizing', 'detecting');
 
         // Bước 1: Gọi API nhận diện
         const faceRes = await fetchJsonSafe(`${API_BASE}/face-check?ip=${encodeURIComponent(ip)}`);
@@ -2187,6 +2497,11 @@
         if (!faceRes.ok) {
           toast('Lỗi nhận diện: ' + (faceRes.error || 'Unknown'));
           setStatus('DETECT ERR', 'err');
+          setSensorStatus('❌ LỖI', 'err', '');
+          setTimeout(() => {
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+          }, 3000);
           return;
         }
 
@@ -2194,9 +2509,14 @@
         const matchedCount = faceRes.faces ? faceRes.faces.filter(f => f.matched).length : 0;
 
         if (faceCount === 0) {
-          toast('Không phát hiện khuôn mặt nào');
+          toast('⚠️ Không phát hiện khuôn mặt nào');
           setStatus('NO FACE', 'warn');
-          setTimeout(reloadCam, 1500);
+          setSensorStatus('⚠️ KHÔNG CÓ MẶT', 'idle', '');
+          setTimeout(() => {
+            reloadCam();
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+          }, 3000);
           return;
         }
 
@@ -2225,54 +2545,68 @@
           const names = faceRes.faces.map(f =>
             `${f.name}${f.matched ? '✅' : '❌'}`
           ).join(', ');
-          setStatus(`DETECTED: ${names}`, 'ok');
+          setStatus(`TEST: ${names}`, 'ok');
 
-          // Lưu log vào database (mark as web_manual)
-          try {
-            const matchedFace = faceRes.faces.find(f => f.matched);
-            const status = matchedCount > 0 ? 'granted' : 'denied';
-            const recognizedName = matchedFace ? matchedFace.name : null;
-            const confidence = matchedFace ? matchedFace.confidence : null;
-
-            await fetch(`${API_BASE}/access-log`, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              body: JSON.stringify({
-                device_id: 'DOOR-01',
-                status: status,
-                recognized_name: recognizedName,
-                confidence: confidence,
-                photo_url: null,
-                source: 'web_manual' // CRITICAL: Mark as manual detection
-              })
-            }).catch(e => console.warn('Log save failed:', e));
-          } catch (e) {
-            console.warn('Failed to save log:', e);
-          }
+          // KHÔNG LƯU LOG vào database vì đây chỉ là chế độ test/đánh giá
+          // Không gọi API mở cửa - chỉ hiển thị kết quả
 
           // Hiển thị kết quả trên sensor status
           if (matchedCount > 0) {
-            setSensorStatus(`✅ ${matchedCount} NGƯỜI`, 'detected', 'active');
-            toast(`✅ Phát hiện ${faceCount} mặt, nhận diện ${matchedCount} người`, 3000);
+            const matchedFace = faceRes.faces.find(f => f.matched);
+            const name = matchedFace ? matchedFace.name : 'Unknown';
+            const conf = matchedFace ? Math.round(matchedFace.confidence) : 0;
+
+            // Hiển thị notification popup cho chế độ TEST
+            showNotification({
+              type: 'success',
+              title: '🔍 Kết Quả Nhận Diện (Chế độ Test)',
+              message: `Phát hiện: ${name}`,
+              details: `Độ chính xác: ${conf}% • Phát hiện ${faceCount} khuôn mặt • KHÔNG MỞ CỬA`,
+              duration: 5000
+            });
+
+            setSensorStatus(`🔍 ${name} (${conf}%) - TEST`, 'detected', 'active');
+            sensorIcon.textContent = '🔍';
           } else {
-            setSensorStatus('❌ KHÔNG RÕ', 'err', '');
-            toast(`⚠️ Phát hiện ${faceCount} mặt nhưng không nhận diện được`, 3000);
+            // Hiển thị notification popup cho nhận diện thất bại
+            showNotification({
+              type: 'error',
+              title: '🔍 Kết Quả Nhận Diện (Chế độ Test)',
+              message: 'Khuôn mặt không có trong hệ thống',
+              details: `Phát hiện ${faceCount} khuôn mặt • KHÔNG MỞ CỬA`,
+              duration: 5000
+            });
+
+            setSensorStatus('🔍 KHÔNG RÕ - TEST', 'err', '');
+            sensorIcon.textContent = '🔍';
           }
 
-          setTimeout(reloadCam, 5000); // Quay lại stream sau 5s
+          // Quay lại stream sau 5s và reset trạng thái
+          setTimeout(() => {
+            reloadCam();
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+          }, 5000);
         } else {
           toast('Lỗi vẽ khung');
           setStatus('DRAW ERR', 'err');
-          setTimeout(reloadCam, 1500);
+          setTimeout(() => {
+            reloadCam();
+            setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+            sensorIcon.textContent = '📡';
+          }, 3000);
         }
 
       } catch (e) {
         console.error(e);
         toast('Lỗi nhận diện: ' + e.message);
         setStatus('ERROR', 'err');
-        setTimeout(reloadCam, 1500);
+        setSensorStatus('❌ LỖI', 'err', '');
+        setTimeout(() => {
+          reloadCam();
+          setSensorStatus('⏹️ ĐANG CHỜ', 'idle', '');
+          sensorIcon.textContent = '📡';
+        }, 3000);
       }
     }
 
@@ -2358,54 +2692,12 @@
 
         if (res.ok) {
           toast('🚨 Đã mở khóa cửa!', 3000);
-          updateDoorStatus('open');
         } else {
           throw new Error(res.error || 'Unlock failed');
         }
       } catch (e) {
         console.error('Emergency unlock error:', e);
         toast('❌ Lỗi: ' + e.message, 3000);
-      }
-    }
-
-    // Door Status
-    async function checkDoorStatus() {
-      try {
-        const res = await fetchJsonSafe(`${API_BASE}/door/status`);
-        updateDoorStatus(res.status);
-      } catch (e) {
-        console.warn('Door status error:', e);
-      }
-    }
-
-    function updateDoorStatus(status) {
-      if (!doorStatusEl) return;
-
-      if (status === 'open') {
-        doorStatusEl.className = 'status-badge door-open';
-        doorStatusEl.innerHTML = '🚪 CỬA MỞ';
-      } else {
-        doorStatusEl.className = 'status-badge door-closed';
-        doorStatusEl.innerHTML = '🚪 CỬA ĐÓNG';
-      }
-    }
-
-    function startDoorStatusPolling() {
-      if (doorStatusTimer) return;
-      doorStatusTimer = setInterval(checkDoorStatus, 2000);
-      checkDoorStatus();
-    }
-
-    // LED Control
-    async function toggleLed(state) {
-      try {
-        const ip = getIP();
-        const value = state ? 255 : 0;
-        await ctrl('led_intensity', value);
-        toast(state ? '💡 Đã bật đèn' : '🌙 Đã tắt đèn', 2000);
-      } catch (e) {
-        console.error('LED control error:', e);
-        toast('❌ Lỗi điều khiển đèn', 2000);
       }
     }
 
@@ -2502,12 +2794,33 @@
           return;
         }
 
+        // Lọc bỏ các log từ emergency unlock
+        const filteredData = res.data.filter(log => {
+          return log.source !== 'emergency_unlock';
+        });
+
+        if (filteredData.length === 0) {
+          historyListEl.innerHTML = '<div class="loading">Chưa có lịch sử</div>';
+          return;
+        }
+
         let html = '';
-        res.data.forEach(log => {
+        filteredData.forEach(log => {
           const statusClass = log.status === 'granted' ? 'success' : 'failed';
           const statusText = log.status === 'granted' ? '✅ Cho phép' : '❌ Từ chối';
           const name = log.recognized_name || 'Unknown';
-          const photoUrl = log.photo_url || '';
+
+          // Tạo đường dẫn ảnh đầy đủ từ photo_url
+          let photoUrl = '';
+          if (log.photo_url) {
+            // Nếu photo_url bắt đầu bằng /uploads, thêm hostname và port
+            if (log.photo_url.startsWith('/uploads')) {
+              photoUrl = `http://${window.location.hostname}:5000${log.photo_url}`;
+            } else {
+              photoUrl = log.photo_url;
+            }
+          }
+
           const timestamp = new Date(log.timestamp).toLocaleString('vi-VN');
 
           html += `
@@ -2683,8 +2996,6 @@
 
     // New feature buttons
     if (btnEmergencyUnlock) btnEmergencyUnlock.addEventListener('click', () => disableDuring(btnEmergencyUnlock, emergencyUnlock()));
-    if (btnLedOn) btnLedOn.addEventListener('click', () => toggleLed(true));
-    if (btnLedOff) btnLedOff.addEventListener('click', () => toggleLed(false));
 
     // Upload images button
     const btnUploadImages = document.getElementById('btn_upload_images');
@@ -2722,15 +3033,14 @@
 
     // ====== BOOT ======
     reloadCam();
-    startSensorPolling(); // Bật sensor polling khi tải trang
-    startDoorStatusPolling(); // Bật door status polling
-    loadFaceList(); // Tải danh sách khuôn mặt
-    loadHistory(); // Tải lịch sử
+    startSensorPolling();
+    loadFaceList();
+    loadHistory();
 
-    // Refresh danh sách và lịch sử mỗi 5 giây
+    // Refresh mỗi 15 giây để giảm tải cho camera
     setInterval(() => {
       loadFaceList();
       loadHistory();
-    }, 5000);
+    }, 15000);
   })();
 </script>

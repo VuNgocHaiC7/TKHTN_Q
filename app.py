@@ -44,14 +44,21 @@ def get_esp_ip():
 
 def fetch_esp32_image(ip, timeout=6):
     """Fetch image from ESP32 camera"""
-    for path in APP_CONFIG['snapshot_paths']:
-        url = f"http://{ip}{path}"
-        try:
-            response = requests.get(url, timeout=timeout)
-            if response.status_code == 200 and response.content.startswith(b'\xff\xd8'):
-                return response.content
-        except:
-            continue
+    session = requests.Session()
+    try:
+        for path in APP_CONFIG['snapshot_paths']:
+            url = f"http://{ip}{path}"
+            try:
+                response = session.get(url, timeout=timeout)
+                if response.status_code == 200 and response.content.startswith(b'\xff\xd8'):
+                    content = response.content
+                    response.close()
+                    return content
+                response.close()
+            except:
+                continue
+    finally:
+        session.close()
     return None
 
 def calculate_image_diff(img1_bytes, img2_bytes):
@@ -571,7 +578,31 @@ def logs_endpoint():
     recognized_name = data.get('recognized_name', 'Unknown')
     confidence = float(data.get('confidence', 0))
     source = data.get('source', 'esp32_auto')
-    device_id = data.get('device_id', 1)
+    device_id = data.get('device_id', 'DOOR-01')  # Default to DOOR-01 string
+    
+    try:
+        execute_query(
+            '''INSERT INTO access_logs 
+               (device_id, status, recognized_name, confidence, source, timestamp) 
+               VALUES (%s, %s, %s, %s, %s, NOW())''',
+            (device_id, status, recognized_name, confidence, source)
+        )
+        
+        return success_response({'message': 'Log saved', 'status': status})
+    except Exception as e:
+        return error_response(f'Failed to save log: {str(e)}', 500)
+
+@app.route('/api/add-log', methods=['POST'])
+def add_log():
+    """Add log entry - Alias for /api/logs POST for frontend compatibility"""
+    data = request.get_json() or request.form.to_dict()
+    
+    status = data.get('status', 'unknown')
+    recognized_name = data.get('recognized_name', 'Unknown')
+    confidence = float(data.get('confidence', 0))
+    source = data.get('source', 'web_manual')
+    device_id = data.get('device_id', 'DOOR-01')
+    esp32_ip = data.get('esp32_ip')
     
     try:
         execute_query(
@@ -700,7 +731,7 @@ def create_access_log():
     """Create access log entry - for manual face check from web"""
     data = request.get_json() or request.form.to_dict()
     
-    device_id = data.get('device_id', 1)
+    device_id = data.get('device_id', 'DOOR-01')  # Default to DOOR-01 string
     status = data.get('status', 'unknown')
     photo_url = data.get('photo_url')
     recognized_name = data.get('recognized_name')
@@ -847,7 +878,8 @@ def emergency_unlock():
             execute_query(
                 '''INSERT INTO access_logs 
                    (device_id, status, recognized_name, source, timestamp) 
-                   VALUES (1, 'granted', 'EMERGENCY_UNLOCK', 'manual', NOW())'''
+                   VALUES (%s, %s, %s, %s, NOW())''',
+                ('DOOR-01', 'granted', 'EMERGENCY_UNLOCK', 'web_manual')
             )
             return success_response({'message': 'Door unlocked successfully'})
         else:
@@ -1126,10 +1158,13 @@ if __name__ == '__main__':
     print(f"📁 Upload dir: {APP_CONFIG['upload_dir']}")
     print(f"🐍 Python: {APP_CONFIG['python_bin']}")
     print(f"🎯 Face DB: {APP_CONFIG['faces_db_dir']}")
-    print(f"🌐 Starting Flask server on http://localhost:5000")
+    print(f"🌐 Starting Flask server on http://0.0.0.0:5000")
+    print("⚠️  Debug mode: OFF (production mode for better performance)")
     
     app.run(
         host='0.0.0.0',
         port=5000,
-        debug=True
+        debug=False,      # Tắt debug để tránh connection leak
+        threaded=True,    # Cho phép xử lý nhiều request cùng lúc
+        use_reloader=False  # Tắt auto-reload
     )

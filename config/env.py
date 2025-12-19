@@ -15,8 +15,8 @@ DB_CONFIG = {
 
 # Application configuration
 APP_CONFIG = {
-    # Base URL for web application
-    'base_url': 'http://localhost/Project_Q/public',
+    # Base URL for web application (thay đổi theo môi trường của bạn)
+    'base_url': 'http://10.87.241.224/Project_Q/public',
     
     # Upload directory for images
     'upload_dir': os.path.join(os.path.dirname(os.path.dirname(__file__)), 'public', 'uploads'),
@@ -25,7 +25,7 @@ APP_CONFIG = {
     'upload_base': '/Project_Q/public/uploads',
     
     # ESP32 default IP
-    'esp32_ip': '192.168.0.107',
+    'esp32_ip': '10.87.241.74',
     
     # ESP32 snapshot endpoints to try
     'snapshot_paths': ['/capture', '/jpg', '/capture?_cb=1'],

@@ -1,7 +1,3 @@
-// CameraWebServer_Final_Full_LCD.ino
-// Face Unlock (LM393 + WiFi + IR State + Servo + LCD 16x2 I2C)
-// Core ESP32 3.3.x
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_camera.h"
@@ -13,36 +9,26 @@
 // === THƯ VIỆN SERVO ===
 #include <ESP32Servo.h>
 
-// === THƯ VIỆN LCD I2C (MỚI) ===
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-
 // ================== WiFi ==================
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
 static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  // Flask Python API
 static const char* IR_STATE_URL = "http://10.87.241.224:5000/api/ir-state";
 
-// ================== CẤU HÌNH CHÂN (ĐÃ ĐỔI) ==================
+// ================== CẤU HÌNH CHÂN ==================
 #define PIN_SERVO 2
 
-// ĐỔI CHÂN IR SANG 13 ĐỂ DÙNG 14, 15 CHO I2C
+// Vẫn giữ chân 13 cho IR như cũ (bạn không cần đổi lại dây)
 const int PIN_LM393 = 13; 
-
-// Cấu hình I2C cho ESP32-CAM (Sử dụng chân cũ của IR và chân SD)
-#define I2C_SDA 14
-#define I2C_SCL 15
 
 // KHỞI TẠO ĐỐI TƯỢNG
 Servo myDoorServo;
-// Địa chỉ I2C thường là 0x27 hoặc 0x3F. Nếu không lên chữ hãy thử đổi 0x3F
-LiquidCrystal_I2C lcd(0x27, 16, 2); 
 
 // Cấu hình góc Servo
 const int POS_CLOSE = 0;    
 const int POS_OPEN  = 180;  
 
-// QUAN TRỌNG: Kiểm tra module của bạn
+// QUAN TRỌNG: Kiểm tra module của bạn (LOW hoặc HIGH tùy loại cảm biến)
 const int MOTION_ACTIVE_STATE = LOW;  
 
 // Trạng thái xử lý nhận diện
@@ -69,13 +55,11 @@ IrStateEnum g_lastIrState = IR_STATE_UNKNOWN;
 // ================== prototype ==================
 void startCameraServer();
 static void set_ir_state(IrStateEnum s);
-void showMessage(String line1, String line2); // Hàm hiển thị LCD
+void showMessage(String line1, String line2); // Hàm hiển thị (giờ chỉ in Serial)
 
 // ================== WiFi ==================
 static void wifi_connect() {
   Serial.printf("[WiFi] Connecting to SSID: %s\n", WIFI_SSID);
-  
-  // Hiển thị LCD
   showMessage("WiFi Connecting", "SSID: " + String(WIFI_SSID));
 
   WiFi.mode(WIFI_STA);
@@ -122,15 +106,28 @@ static void set_ir_state(IrStateEnum s) {
     default:                 text = "unknown";   break;
   }
   Serial.printf("[IR] State changed -> %s\n", text);
+  
+  // Gửi state lên Flask API
+  if (WiFi.status() == WL_CONNECTED) {
+    HTTPClient http;
+    String url = String(IR_STATE_URL) + "?state=" + String(text);
+    http.begin(url);
+    http.setTimeout(2000);
+    int code = http.GET();
+    http.end();
+    
+    if (code == 200) {
+      Serial.printf("[IR] Sent state to server: %s\n", text);
+    } else {
+      Serial.printf("[IR] Failed to send state (HTTP %d)\n", code);
+    }
+  }
 }
 
-// ================== Helper LCD ==================
+// ================== Helper Thay thế LCD ==================
+// Vì đã bỏ LCD, hàm này sẽ in ra Serial để bạn tiện theo dõi lỗi nếu có
 void showMessage(String line1, String line2) {
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(line1);
-  lcd.setCursor(0, 1);
-  lcd.print(line2);
+  Serial.println(">>> [STATUS] " + line1 + " | " + line2);
 }
 
 // ================== Camera Init ==================
@@ -196,11 +193,9 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) {
     Serial.println("[CAM] Capture failed");
-    showMessage("Camera Error", "Capture Failed");
     return false;
   }
 
-  // Báo lên LCD đang gửi
   showMessage("Analyzing...", "Please wait");
 
   HTTPClient http;
@@ -254,25 +249,20 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
 void setup() {
   Serial.begin(115200);
   
-  // 1. Khởi tạo LCD I2C
-  // QUAN TRỌNG: Định nghĩa chân SDA, SCL cho ESP32-CAM
-  Wire.begin(I2C_SDA, I2C_SCL); 
-  lcd.init();
-  lcd.backlight();
-  showMessage("System Booting", "Face Unlock v2");
+  showMessage("System Booting", "Face Unlock v2 (No LCD)");
   delay(1000);
 
-  // 2. Khởi tạo Servo
+  // 1. Khởi tạo Servo
   myDoorServo.setPeriodHertz(50);    
   myDoorServo.attach(PIN_SERVO, 500, 2400); 
   myDoorServo.write(POS_CLOSE);      
   delay(500);                        
   myDoorServo.detach();              
 
-  // 3. Cảm biến IR (Chân 13)
+  // 2. Cảm biến IR (Chân 13)
   pinMode(PIN_LM393, INPUT); 
 
-  // 4. Init Camera
+  // 3. Init Camera
   if (!camera_init_qvga()) {
     Serial.println("[ERR] Camera init FAIL");
     showMessage("Camera Error", "Init Failed");
@@ -303,15 +293,13 @@ void loop() {
 
   set_ir_state(motionDetected ? IR_STATE_DETECTING : IR_STATE_WAITING);
 
-  // Nếu phát hiện người, cập nhật LCD (nếu chưa đang check)
-  if (motionDetected && !isChecking && !gateLocked) {
-     showMessage("Motion Detected", "Scanning...");
-  } else if (!isChecking && !gateLocked && !motionDetected && (now - lastTrigger > 2000)) {
-     // Hiển thị trạng thái chờ nếu không làm gì
-     static unsigned long lastLcdUpdate = 0;
-     if (now - lastLcdUpdate > 5000) {
-        showMessage("System Ready", "Waiting...");
-        lastLcdUpdate = now;
+  // Hiển thị trạng thái chờ nếu không làm gì
+  if (!isChecking && !gateLocked && !motionDetected && (now - lastTrigger > 2000)) {
+     static unsigned long lastUpdate = 0;
+     if (now - lastUpdate > 5000) {
+        // Chỉ in log nhẹ nhàng để biết hệ thống vẫn sống
+        // Serial.println("[IDLE] Waiting..."); 
+        lastUpdate = now;
      }
   }
 
@@ -333,7 +321,6 @@ void loop() {
       String who;
       int confidence = 0;
 
-      // Hàm này đã có LCD "Analyzing..." bên trong
       ok = post_frame_to_backend(recognized, who, confidence);
 
       if (!ok) {
@@ -343,10 +330,8 @@ void loop() {
       else if (recognized) {
         Serial.println("✅ NHẬN DIỆN THÀNH CÔNG!");
         
-        // Hiển thị LCD Chào mừng
         showMessage("Welcome:", who);
-        
-        save_log_to_db(true, who, confidence);
+        // Log đã được lưu bởi backend Flask khi gọi /api/face-unlock
 
         // Mở Servo
         myDoorServo.attach(PIN_SERVO, 500, 2400); 
@@ -359,7 +344,7 @@ void loop() {
 
         delay(2000);                               
         
-        // Chờ người đi qua (giữ nguyên logic cũ)
+        // Chờ người đi qua
         unsigned long waitStart = millis();
         const unsigned long MAX_WAIT = 10000;
         
@@ -381,11 +366,10 @@ void loop() {
       else {
         Serial.println("❌ TỪ CHỐI!");
         
-        // Hiển thị LCD Từ chối
         showMessage("Access Denied", "Unknown Face");
+        // Log đã được lưu bởi backend Flask khi gọi /api/face-unlock
         
-        save_log_to_db(false, who, confidence);
-        delay(3000); // Giữ thông báo lâu chút để người dùng đọc
+        delay(3000); 
       }
 
       isChecking = false;

@@ -1,10 +1,21 @@
+-- ============================================================
+-- PROJECT_Q - UNIFIED DATABASE SCHEMA & MIGRATION
+-- ============================================================
+-- File này có thể chạy nhiều lần an toàn:
+--   - Lần đầu: Tạo mới database và tables
+--   - Lần sau: Cập nhật schema và fix conflicts
+-- ============================================================
+
 -- Tạo database nếu chưa tồn tại
 CREATE DATABASE IF NOT EXISTS ESP32KEY;
 
 -- Chọn database để sử dụng
 USE ESP32KEY;
 
-CREATE TABLE users (
+-- ============================================================
+-- TABLE: users
+-- ============================================================
+CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
   email VARCHAR(190) UNIQUE,
@@ -12,7 +23,10 @@ CREATE TABLE users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE devices (
+-- ============================================================
+-- TABLE: devices
+-- ============================================================
+CREATE TABLE IF NOT EXISTS devices (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
   secret VARCHAR(128) NOT NULL,       -- token cho thiết bị (giữ bí mật)
@@ -22,11 +36,15 @@ CREATE TABLE devices (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Bảng access_logs với cột source để phân biệt nguồn ghi log
--- esp32_auto: Log tự động từ ESP32
--- web_manual: Log thủ công từ Web
--- unknown: Log cũ hoặc không xác định
-CREATE TABLE access_logs (
+-- ============================================================
+-- TABLE: access_logs
+-- Bảng lưu lịch sử nhận diện với source để phân biệt:
+--   - esp32_auto: ESP32 tự động gửi
+--   - web_manual: Nhấn nút "Nhận diện" trên web
+--   - lm393_auto: LM393 sensor tự động phát hiện
+--   - unknown: Log cũ hoặc không xác định
+-- ============================================================
+CREATE TABLE IF NOT EXISTS access_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   device_id VARCHAR(64) NOT NULL,
   user_id INT NULL,
@@ -39,13 +57,15 @@ CREATE TABLE access_logs (
   note VARCHAR(255) NULL,
   ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  source ENUM('esp32_auto','web_manual','unknown') DEFAULT 'unknown',
+  source ENUM('esp32_auto','web_manual','lm393_auto','unknown') DEFAULT 'unknown',
   INDEX(device_id), INDEX(user_id), INDEX(ts),
-  INDEX(status), INDEX(recognized_name), INDEX(timestamp), INDEX(source),
-  CONSTRAINT fk_log_device FOREIGN KEY (device_id) REFERENCES devices(id)
+  INDEX(status), INDEX(recognized_name), INDEX(timestamp), INDEX(source)
 );
 
-CREATE TABLE api_keys (
+-- ============================================================
+-- TABLE: api_keys
+-- ============================================================
+CREATE TABLE IF NOT EXISTS api_keys (
   id INT AUTO_INCREMENT PRIMARY KEY,
   label VARCHAR(120),
   api_key VARCHAR(128) NOT NULL UNIQUE,
@@ -53,11 +73,30 @@ CREATE TABLE api_keys (
   last_used_at TIMESTAMP NULL
 );
 
-/* Seed nhanh 1 thiết bị + 1 API key (thay giá trị khi triển khai thật) */
-INSERT INTO devices (id, name, secret) VALUES
+-- ============================================================
+-- MIGRATION: Update existing tables (safe to run multiple times)
+-- ============================================================
+
+-- 1. Update access_logs source ENUM (nếu đã tồn tại nhưng thiếu lm393_auto)
+ALTER TABLE access_logs 
+MODIFY COLUMN source ENUM('esp32_auto','web_manual','lm393_auto','unknown') DEFAULT 'unknown';
+
+-- 2. Update/recreate foreign key với ON DELETE CASCADE
+ALTER TABLE access_logs DROP FOREIGN KEY IF EXISTS fk_log_device;
+ALTER TABLE access_logs 
+ADD CONSTRAINT fk_log_device 
+FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE;
+
+-- 3. Fix old data: Đổi device_id = '1' thành 'DOOR-01' (nếu tồn tại)
+UPDATE access_logs SET device_id = 'DOOR-01' WHERE device_id = '1';
+
+-- ============================================================
+-- SEED DATA: Insert default device and API key
+-- ============================================================
+INSERT IGNORE INTO devices (id, name, secret) VALUES
 ('DOOR-01', 'Cửa chính', 'DEV_SECRET_123');
 
-INSERT INTO api_keys (label, api_key) VALUES
+INSERT IGNORE INTO api_keys (label, api_key) VALUES
 ('AdminKey', 'ADMIN_API_KEY_123');
 
 /* View để xem logs chi tiết dễ hơn */

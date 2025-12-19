@@ -337,13 +337,3 @@ void startCameraServer() {
 
   log_i("[HTTPD] Camera servers started");
 }
-
-// ========== LED Setup ==========
-void setupLedFlash() {
-#if defined(LED_GPIO_NUM)
-  ledcAttach(LED_GPIO_NUM, 5000, 8);
-  led_duty = 200;
-#else
-  log_i("LED flash disabled");
-#endif
-}

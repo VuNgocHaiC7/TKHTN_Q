@@ -1,31 +1,6 @@
--- ============================================================
--- PROJECT_Q - UNIFIED DATABASE SCHEMA & MIGRATION
--- ============================================================
--- File này có thể chạy nhiều lần an toàn:
---   - Lần đầu: Tạo mới database và tables
---   - Lần sau: Cập nhật schema và fix conflicts
--- ============================================================
-
--- Tạo database nếu chưa tồn tại
 CREATE DATABASE IF NOT EXISTS ESP32KEY;
-
--- Chọn database để sử dụng
 USE ESP32KEY;
 
--- ============================================================
--- TABLE: users
--- ============================================================
-CREATE TABLE IF NOT EXISTS users (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(120) NOT NULL,
-  email VARCHAR(190) UNIQUE,
-  role ENUM('admin','viewer') DEFAULT 'viewer',
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- TABLE: devices
--- ============================================================
 CREATE TABLE IF NOT EXISTS devices (
   id VARCHAR(64) PRIMARY KEY,
   name VARCHAR(120) NOT NULL,
@@ -38,19 +13,14 @@ CREATE TABLE IF NOT EXISTS devices (
 
 -- ============================================================
 -- TABLE: access_logs
--- Bảng lưu lịch sử nhận diện với source để phân biệt:
---   - esp32_auto: ESP32 tự động gửi
---   - web_manual: Nhấn nút "Nhận diện" trên web
---   - lm393_auto: LM393 sensor tự động phát hiện
---   - unknown: Log cũ hoặc không xác định
+-- Bảng lưu lịch sử nhận diện
 -- ============================================================
 CREATE TABLE IF NOT EXISTS access_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   device_id VARCHAR(64) NOT NULL,
-  user_id INT NULL,
-  result ENUM('ALLOW','DENY','ENROLLED','UNKNOWN') DEFAULT 'ALLOW',
-  recognized_name VARCHAR(120) NULL,
+  recognized_name VARCHAR(120) NULL, -- Tên người được nhận diện (Lưu trực tiếp string)
   confidence DECIMAL(5,2) NULL,
+  result ENUM('ALLOW','DENY','ENROLLED','UNKNOWN') DEFAULT 'ALLOW',
   status VARCHAR(20) NULL,
   image_url VARCHAR(255) NULL,
   photo_url VARCHAR(255) NULL,
@@ -58,8 +28,14 @@ CREATE TABLE IF NOT EXISTS access_logs (
   ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   source ENUM('esp32_auto','web_manual','lm393_auto','unknown') DEFAULT 'unknown',
-  INDEX(device_id), INDEX(user_id), INDEX(ts),
-  INDEX(status), INDEX(recognized_name), INDEX(timestamp), INDEX(source)
+  
+  -- Tạo index
+  INDEX(device_id), 
+  INDEX(ts),
+  INDEX(status), 
+  INDEX(recognized_name), 
+  INDEX(timestamp), 
+  INDEX(source)
 );
 
 -- ============================================================
@@ -77,17 +53,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
 -- MIGRATION: Update existing tables (safe to run multiple times)
 -- ============================================================
 
--- 1. Update access_logs source ENUM (nếu đã tồn tại nhưng thiếu lm393_auto)
+-- 1. Update access_logs source ENUM
 ALTER TABLE access_logs 
 MODIFY COLUMN source ENUM('esp32_auto','web_manual','lm393_auto','unknown') DEFAULT 'unknown';
 
--- 2. Update/recreate foreign key với ON DELETE CASCADE
+-- 2. Update foreign key cho device (Xóa cũ tạo mới để đảm bảo đúng)
 ALTER TABLE access_logs DROP FOREIGN KEY IF EXISTS fk_log_device;
 ALTER TABLE access_logs 
 ADD CONSTRAINT fk_log_device 
 FOREIGN KEY (device_id) REFERENCES devices(id) ON DELETE CASCADE;
 
--- 3. Fix old data: Đổi device_id = '1' thành 'DOOR-01' (nếu tồn tại)
+-- 3. 
+-- Chạy dòng này nếu bạn đang update từ DB cũ lên DB mới
+-- ALTER TABLE access_logs DROP COLUMN IF EXISTS user_id;
+
+-- 4. Fix old data: Đổi device_id = '1' thành 'DOOR-01' (nếu tồn tại)
 UPDATE access_logs SET device_id = 'DOOR-01' WHERE device_id = '1';
 
 -- ============================================================

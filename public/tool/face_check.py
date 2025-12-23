@@ -72,7 +72,7 @@ def load_known_encodings(db_dir):
                     if not locs: 
                         continue
                     # num_jitters=2 = HIGHER accuracy for database (one-time cost)
-                    enc = face_recognition.face_encodings(img, locs, num_jitters=2)[0]
+                    enc = face_recognition.face_encodings(img, locs, num_jitters=1)[0]
                     encs.append(enc)
                     names.append(person_name)
                 except Exception:
@@ -98,7 +98,7 @@ def load_known_encodings(db_dir):
             if not locs: 
                 continue
             # num_jitters=2 = HIGHER accuracy for database (one-time cost)
-            enc = face_recognition.face_encodings(img, locs, num_jitters=2)[0]
+            enc = face_recognition.face_encodings(img, locs, num_jitters=1)[0]
             encs.append(enc)
             names.append(label)
         except Exception:

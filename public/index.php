@@ -2687,16 +2687,44 @@
     async function emergencyUnlock() {
       try {
         const res = await fetchJsonSafe(`${API_BASE}/door/unlock`, {
-          method: 'POST'
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            ip: ipEl.value
+          })
         });
 
         if (res.ok) {
+          // Hiển thị thông báo thành công với notification popup
+          showNotification({
+            type: 'success',
+            title: '🚨 Mở Khóa Khẩn Cấp',
+            message: 'Đã mở khóa cửa thành công!',
+            details: `Thời gian: ${new Date().toLocaleTimeString('vi-VN')}`,
+            duration: 4000
+          });
+
+          // Toast đơn giản
           toast('🚨 Đã mở khóa cửa!', 3000);
+
+          // KHÔNG reload history vì không ghi log
         } else {
           throw new Error(res.error || 'Unlock failed');
         }
       } catch (e) {
         console.error('Emergency unlock error:', e);
+
+        // Hiển thị thông báo lỗi
+        showNotification({
+          type: 'error',
+          title: '❌ Lỗi Mở Khóa',
+          message: 'Không thể mở khóa cửa',
+          details: e.message,
+          duration: 4000
+        });
+
         toast('❌ Lỗi: ' + e.message, 3000);
       }
     }
@@ -2794,9 +2822,9 @@
           return;
         }
 
-        // Lọc bỏ các log từ emergency unlock
+        // Lọc bỏ log emergency unlock
         const filteredData = res.data.filter(log => {
-          return log.source !== 'emergency_unlock';
+          return log.recognized_name !== 'EMERGENCY_UNLOCK' && log.source !== 'web_manual';
         });
 
         if (filteredData.length === 0) {

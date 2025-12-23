@@ -1,7 +1,3 @@
-// Optimized version for faster capture & stream
-// Compatible with ESP32 Arduino core 3.3.2
-// Author: Vu Hai + ChatGPT (Optimized 2025)
-
 #include <Arduino.h>
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -20,7 +16,12 @@
   #define log_e(...)
 #endif
 
-// Callback (được định nghĩa trong .ino)
+// Biến toàn cục từ file chính (.ino)
+extern bool g_manualUnlock;
+extern bool isChecking;
+extern unsigned long lastTrigger;
+
+// Callback
 extern "C" void esp32cam_on_face_presence(bool present);
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -80,14 +81,14 @@ static void enable_led(bool en) {
 }
 #endif
 
-// ========== CAPTURE HANDLER (optimized for face detection) ==========
+// ========== CAPTURE HANDLER (optimized) ==========
 static esp_err_t capture_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
   esp_err_t res = ESP_OK;
 
 #if defined(LED_GPIO_NUM)
   enable_led(true);
-  vTaskDelay(150 / portTICK_PERIOD_MS); // Đợi LED ổn định cho ảnh sáng hơn
+  vTaskDelay(150 / portTICK_PERIOD_MS); 
 #endif
 
   fb = esp_camera_fb_get();
@@ -105,17 +106,14 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "image/jpeg");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=capture.jpg");
-  httpd_resp_set_hdr(req, "X-Image-Quality", "high");  // Quality indicator
   
   char ts[32];
   snprintf(ts, 32, "%lld.%06ld", fb->timestamp.tv_sec, fb->timestamp.tv_usec);
   httpd_resp_set_hdr(req, "X-Timestamp", ts);
 
-  // Gửi trực tiếp JPEG buffer
   if (fb->format == PIXFORMAT_JPEG) {
     res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
   } else {
-    // Chuyển đổi sang JPEG nếu cần (ít xảy ra vì đã config PIXFORMAT_JPEG)
     uint8_t *jpg_buf = NULL;
     size_t jpg_len = 0;
     bool ok = frame2jpg(fb, 80, &jpg_buf, &jpg_len);
@@ -134,7 +132,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   return res;
 }
 
-// ========== STREAM HANDLER (MJPEG optimized for AI) ==========
+// ========== STREAM HANDLER ==========
 static esp_err_t stream_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
   esp_err_t res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
@@ -163,35 +161,23 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     size_t _jpg_len = fb->len;
     struct timeval ts = fb->timestamp;
 
-    // Gửi boundary + header trong 1 lần để giảm overhead
     char part_buf[256];
     size_t hlen = snprintf(part_buf, sizeof(part_buf), 
                            "%sContent-Type: image/jpeg\r\nContent-Length: %u\r\nX-Timestamp: %d.%06d\r\n\r\n",
                            _STREAM_BOUNDARY, _jpg_len, ts.tv_sec, ts.tv_usec);
     res = httpd_resp_send_chunk(req, part_buf, hlen);
 
-    // Gửi ảnh
     if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)_jpg_buf, _jpg_len);
 
-    // Trả frame buffer ngay lập tức để camera có thể capture tiếp
     esp_camera_fb_return(fb);
     fb = NULL;
 
     if (res != ESP_OK) break;
 
-    // Thống kê FPS
     int64_t now = esp_timer_get_time();
     int frame_time = (now - last_frame) / 1000;
     last_frame = now;
-    int avg = ra_filter_run(&ra_filter, frame_time);
-    
-    // Log mỗi 30 frame để giảm overhead
-    static int frame_count = 0;
-    if (++frame_count >= 30) {
-      log_i("Stream %uB %dms (%.1ffps) | AVG %dms (%.1ffps)", 
-            (unsigned)_jpg_len, frame_time, 1000.0 / frame_time, avg, 1000.0 / avg);
-      frame_count = 0;
-    }
+    ra_filter_run(&ra_filter, frame_time);
   }
 
 #if defined(LED_GPIO_NUM)
@@ -221,7 +207,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
   return httpd_resp_send(req, resp, strlen(resp));
 }
 
-// ========== CONTROL HANDLER ==========
+// ========== CONTROL HANDLER (ĐÃ SỬA LỖI) ==========
 static esp_err_t cmd_handler(httpd_req_t *req) {
   char *buf = NULL;
   size_t buf_len = httpd_req_get_url_query_len(req) + 1;
@@ -237,10 +223,23 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   }
   free(buf);
 
+  // Chuyển val (chuỗi) thành số nguyên
   int value = atoi(val);
   sensor_t *s = esp_camera_sensor_get();
   int r = 0;
 
+  // Dùng đúng tên biến 'var' và so sánh số nguyên 'value'
+  if(!strcmp(var, "unlock")) {
+      if(value == 1) {
+          g_manualUnlock = true; // Bật cờ để loop() xử lý
+          Serial.println("[HTTP] Received UNLOCK command from Web!");
+      }
+      // Trả về thành công ngay lập tức cho lệnh unlock
+      httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+      return httpd_resp_send(req, NULL, 0);
+  }
+
+  // Các lệnh điều khiển Camera
   if (!strcmp(var, "framesize")) r = s->set_framesize(s, (framesize_t)value);
   else if (!strcmp(var, "quality")) r = s->set_quality(s, value);
   else if (!strcmp(var, "brightness")) r = s->set_brightness(s, value);
@@ -249,6 +248,8 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
   else if (!strcmp(var, "vflip")) r = s->set_vflip(s, value);
   else if (!strcmp(var, "hmirror")) r = s->set_hmirror(s, value);
   else if (!strcmp(var, "face_detect")) detection_enabled = value ? 1 : 0;
+  
+  // Đã xóa đoạn lặp lại xử lý framesize sai cú pháp ở đây
 
   if (r < 0) return httpd_resp_send_500(req);
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
@@ -256,12 +257,8 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
 }
 
 // ========== SENSOR STATUS HANDLER (LM393) ==========
-// Khai báo biến từ .ino
-extern bool isChecking;
-extern unsigned long lastTrigger;
-
-// Định nghĩa local constants (phải khớp với .ino)
-static const int PIN_LM393 = 14;
+// Cập nhật chân 13 cho đúng với file .ino (vì chân 14 dùng cho LCD rồi)
+static const int PIN_LM393 = 13; 
 static const int MOTION_ACTIVE_STATE = LOW;
 static const unsigned long COOLDOWN_MS = 5000;
 

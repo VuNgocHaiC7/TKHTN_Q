@@ -43,7 +43,7 @@ APP_CONFIG = {
     'tolerance': 0.6,
     
     # Python process timeout in seconds (20s for first run cache rebuild, then 2-3s)
-    'python_timeout': 20,
+    'python_timeout': 60,
     
     # Save photos for unlock attempts (True/False)
     'save_unlock_photos': True,

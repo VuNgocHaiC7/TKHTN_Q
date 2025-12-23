@@ -5,59 +5,57 @@
 #include "camera_pins.h"
 #include "esp_http_client.h"
 #include <HTTPClient.h>
+#include <ESP32Servo.h> 
 
-// === THƯ VIỆN SERVO ===
-#include <ESP32Servo.h>
-
-// ================== WiFi ==================
+// ================== CẤU HÌNH NGƯỜI DÙNG ==================
 static const char* WIFI_SSID   = "Q";
 static const char* WIFI_PASS   = "1709200004";
-static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  // Flask Python API
+static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  
 static const char* IR_STATE_URL = "http://10.87.241.224:5000/api/ir-state";
 
-// ================== CẤU HÌNH CHÂN ==================
+// ================== CẤU HÌNH CHÂN (ĐÃ SỬA) ==================
 #define PIN_SERVO 2
+// [QUAN TRỌNG] Đổi sang chân 14 (Nối chân dương Buzzer vào đây, chân âm vào GND)
+#define PIN_BUZZER 14       
+const int PIN_LM393 = 13;   
 
-// Vẫn giữ chân 13 cho IR như cũ (bạn không cần đổi lại dây)
-const int PIN_LM393 = 13; 
-
-// KHỞI TẠO ĐỐI TƯỢNG
+// ================== BIẾN TOÀN CỤC ==================
 Servo myDoorServo;
-
-// Cấu hình góc Servo
-const int POS_CLOSE = 0;    
+const int POS_CLOSE = 10;    
 const int POS_OPEN  = 180;  
 
-// QUAN TRỌNG: Kiểm tra module của bạn (LOW hoặc HIGH tùy loại cảm biến)
-const int MOTION_ACTIVE_STATE = LOW;  
+int failedCount = 0;        
+const int MAX_FAILED = 3;   
+bool g_manualUnlock = false;
 
-// Trạng thái xử lý nhận diện
+const int MOTION_ACTIVE_STATE = LOW; 
 bool isChecking = false;
-
-// Chống spam cảm biến
 bool gateLocked = false;             
 unsigned long lastTrigger = 0;
 const unsigned long COOLDOWN_MS = 10000;   
 
-// Auto WiFi reconnect
 unsigned long lastWifiTry = 0;
 const unsigned long WIFI_RETRY_EVERY = 10000; 
 
-// === IR STATE ===
 enum IrStateEnum {
   IR_STATE_UNKNOWN = 0,
   IR_STATE_WAITING,
   IR_STATE_DETECTING
 };
-
 IrStateEnum g_lastIrState = IR_STATE_UNKNOWN;
 
-// ================== prototype ==================
-void startCameraServer();
+// ================== PROTOTYPE ==================
+void startCameraServer(); 
 static void set_ir_state(IrStateEnum s);
-void showMessage(String line1, String line2); // Hàm hiển thị (giờ chỉ in Serial)
+void showMessage(String line1, String line2);
+void triggerAlarm();
 
-// ================== WiFi ==================
+// ================== CÁC HÀM HỖ TRỢ ==================
+
+void showMessage(String line1, String line2) {
+  Serial.println(">>> [STATUS] " + line1 + " | " + line2);
+}
+
 static void wifi_connect() {
   Serial.printf("[WiFi] Connecting to SSID: %s\n", WIFI_SSID);
   showMessage("WiFi Connecting", "SSID: " + String(WIFI_SSID));
@@ -85,10 +83,8 @@ static void wifi_connect() {
 
 static void ensureWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
-
   unsigned long now = millis();
   if (now - lastWifiTry < WIFI_RETRY_EVERY) return; 
-
   lastWifiTry = now;
   Serial.println("[WiFi] Disconnected -> retry wifi_connect()...");
   showMessage("WiFi Lost", "Reconnecting...");
@@ -107,7 +103,6 @@ static void set_ir_state(IrStateEnum s) {
   }
   Serial.printf("[IR] State changed -> %s\n", text);
   
-  // Gửi state lên Flask API
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     String url = String(IR_STATE_URL) + "?state=" + String(text);
@@ -115,22 +110,9 @@ static void set_ir_state(IrStateEnum s) {
     http.setTimeout(2000);
     int code = http.GET();
     http.end();
-    
-    if (code == 200) {
-      Serial.printf("[IR] Sent state to server: %s\n", text);
-    } else {
-      Serial.printf("[IR] Failed to send state (HTTP %d)\n", code);
-    }
   }
 }
 
-// ================== Helper Thay thế LCD ==================
-// Vì đã bỏ LCD, hàm này sẽ in ra Serial để bạn tiện theo dõi lỗi nếu có
-void showMessage(String line1, String line2) {
-  Serial.println(">>> [STATUS] " + line1 + " | " + line2);
-}
-
-// ================== Camera Init ==================
 static bool camera_init_qvga() {
   camera_config_t cfg = {};
   cfg.ledc_channel = LEDC_CHANNEL_0;
@@ -150,39 +132,19 @@ static bool camera_init_qvga() {
   
   cfg.xclk_freq_hz = 20000000; 
   cfg.pixel_format = PIXFORMAT_JPEG;
-
   cfg.frame_size = FRAMESIZE_QVGA; 
   cfg.jpeg_quality = 12;           
   cfg.fb_count = 2;
 
   if (esp_camera_init(&cfg) != ESP_OK) return false;
-  if (sensor_t* s = esp_camera_sensor_get()) {
+  
+  sensor_t* s = esp_camera_sensor_get();
+  if (s) {
     s->set_brightness(s, 0);
     s->set_saturation(s, 0);
     s->set_contrast(s, 0);
   }
   return true;
-}
-
-// ================== LƯU LOG & GỬI ẢNH ==================
-static void save_log_to_db(bool recognized, const String &who, int confidence) {
-  HTTPClient http;
-  String logUrl = "http://10.87.241.224:5000/api/logs";
-  
-  http.begin(logUrl);
-  http.addHeader("Content-Type", "application/json");
-  
-  String status = recognized ? "granted" : "denied";
-  String name = recognized ? who : "Unknown";
-  String payload = "{";
-  payload += "\"status\":\"" + status + "\",";
-  payload += "\"recognized_name\":\"" + name + "\",";
-  payload += "\"confidence\":" + String(confidence) + ",";
-  payload += "\"source\":\"esp32_auto\"";
-  payload += "}";
-  
-  http.POST(payload);
-  http.end();
 }
 
 static bool post_frame_to_backend(bool &recognized, String &who, int &confidence) {
@@ -241,28 +203,63 @@ static bool post_frame_to_backend(bool &recognized, String &who, int &confidence
     confVal.trim();
     confidence = confVal.toInt();
   }
-
   return true;
+}
+
+void openGate() {
+  Serial.println("[DOOR] Opening via Request/FaceID...");
+  
+  myDoorServo.attach(PIN_SERVO, 500, 2400);
+  delay(100); 
+  myDoorServo.write(POS_OPEN);
+  Serial.println("   -> Door OPEN");
+  
+  delay(5000); 
+
+  Serial.println("   -> Door CLOSING");
+  myDoorServo.write(POS_CLOSE);
+  delay(2000);
+  
+  myDoorServo.detach();
+  Serial.println("[DOOR] Locked.");
+}
+
+// Hàm báo động đã sửa lại cho phù hợp với cách đấu nối mới (Chân 14 + GND)
+void triggerAlarm() {
+  Serial.println("[ALARM] CẢNH BÁO: SAI QUÁ 3 LẦN!");
+  showMessage("ALARM!!!", "Intruder Alert");
+  
+  // LOGIC MỚI: HIGH = BẬT, LOW = TẮT
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(PIN_BUZZER, HIGH);  // Bật (3.3V)
+    delay(500);                     
+    digitalWrite(PIN_BUZZER, LOW);   // Tắt (0V)
+    delay(300);                     
+  }
 }
 
 // ================== SETUP ==================
 void setup() {
   Serial.begin(115200);
+
+  // 1. TẮT BUZZER NGAY LẬP TỨC
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW); // Đảm bảo mức thấp ngay từ đầu
   
-  showMessage("System Booting", "Face Unlock v2 (No LCD)");
+  showMessage("System Booting", "Face Unlock");
   delay(1000);
 
-  // 1. Khởi tạo Servo
+  // 2. Khởi tạo Servo
   myDoorServo.setPeriodHertz(50);    
   myDoorServo.attach(PIN_SERVO, 500, 2400); 
   myDoorServo.write(POS_CLOSE);      
   delay(500);                        
-  myDoorServo.detach();              
+  myDoorServo.detach();       
 
-  // 2. Cảm biến IR (Chân 13)
+  // 3. Cảm biến IR 
   pinMode(PIN_LM393, INPUT); 
 
-  // 3. Init Camera
+  // 4. Init Camera
   if (!camera_init_qvga()) {
     Serial.println("[ERR] Camera init FAIL");
     showMessage("Camera Error", "Init Failed");
@@ -270,11 +267,21 @@ void setup() {
     ESP.restart();
   }
 
-  // Kết nối WiFi
-  wifi_connect();
+  // Chốt tắt Buzzer lần nữa (đề phòng thư viện camera reset chân)
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW); 
 
-  startCameraServer();
+  // 5. Kết nối WiFi
+  wifi_connect();
   
+  // Chốt tắt Buzzer lần cuối sau khi WiFi connect
+  pinMode(PIN_BUZZER, OUTPUT);
+  digitalWrite(PIN_BUZZER, LOW); 
+
+  // 6. Start Web Server
+  startCameraServer();
+
+  // Kiểm tra trạng thái IR ban đầu
   int initialState = digitalRead(PIN_LM393);
   bool initialMotion = (initialState == MOTION_ACTIVE_STATE);
   set_ir_state(initialMotion ? IR_STATE_DETECTING : IR_STATE_WAITING);
@@ -285,27 +292,27 @@ void setup() {
 
 // ================== LOOP ==================
 void loop() {
-  ensureWifi();
+  ensureWifi(); 
 
-  unsigned long now   = millis();
-  int sensor          = digitalRead(PIN_LM393);
+  if (g_manualUnlock) {
+    g_manualUnlock = false; 
+    openGate();            
+  }
+
+  unsigned long now = millis();
+  int sensor = digitalRead(PIN_LM393);
   bool motionDetected = (sensor == MOTION_ACTIVE_STATE);
 
   set_ir_state(motionDetected ? IR_STATE_DETECTING : IR_STATE_WAITING);
 
-  // Hiển thị trạng thái chờ nếu không làm gì
   if (!isChecking && !gateLocked && !motionDetected && (now - lastTrigger > 2000)) {
      static unsigned long lastUpdate = 0;
      if (now - lastUpdate > 5000) {
-        // Chỉ in log nhẹ nhàng để biết hệ thống vẫn sống
-        // Serial.println("[IDLE] Waiting..."); 
         lastUpdate = now;
      }
   }
 
-  // Xử lý logic chính
   if (motionDetected && !gateLocked && !isChecking && (now - lastTrigger > COOLDOWN_MS)) {
-
     gateLocked  = true;      
     lastTrigger = now;
     isChecking  = true;
@@ -328,48 +335,24 @@ void loop() {
         delay(2000);
       }
       else if (recognized) {
-        Serial.println("✅ NHẬN DIỆN THÀNH CÔNG!");
+        Serial.println("NHẬN DIỆN THÀNH CÔNG!");
+        failedCount = 0; 
         
         showMessage("Welcome:", who);
-        // Log đã được lưu bởi backend Flask khi gọi /api/face-unlock
-
-        // Mở Servo
-        myDoorServo.attach(PIN_SERVO, 500, 2400); 
-        delay(100);                               
-        myDoorServo.write(POS_OPEN);
-        
-        // Thông báo mở cửa
-        delay(1000);
-        showMessage("Door Opened", "Please Enter");
-
-        delay(2000);                               
-        
-        // Chờ người đi qua
-        unsigned long waitStart = millis();
-        const unsigned long MAX_WAIT = 10000;
-        
-        while (millis() - waitStart < MAX_WAIT) {
-          int currentSensor = digitalRead(PIN_LM393);
-          if (currentSensor != MOTION_ACTIVE_STATE) {
-            delay(500);
-            if (digitalRead(PIN_LM393) != MOTION_ACTIVE_STATE) break;
-          }
-          delay(100);
-        }
-        
-        // Đóng cửa
-        showMessage("Door Closing", "Goodbye!");
-        myDoorServo.write(POS_CLOSE);              
-        delay(2000);                                
-        myDoorServo.detach();                       
+        openGate(); 
       }
       else {
-        Serial.println("❌ TỪ CHỐI!");
-        
-        showMessage("Access Denied", "Unknown Face");
-        // Log đã được lưu bởi backend Flask khi gọi /api/face-unlock
-        
-        delay(3000); 
+        Serial.println("TỪ CHỐI!");
+        failedCount++;
+        Serial.printf("Sai lần thứ: %d/%d\n", failedCount, MAX_FAILED);
+
+        if (failedCount >= MAX_FAILED) {
+            triggerAlarm(); 
+            failedCount = 0;
+        } else {
+            showMessage("Access Denied", "Unknown Face");
+            delay(3000); 
+        }
       }
 
       isChecking = false;

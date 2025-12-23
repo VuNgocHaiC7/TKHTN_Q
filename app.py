@@ -864,27 +864,39 @@ def face_unlock_endpoint():
 
 @app.route('/api/door/unlock', methods=['POST'])
 def emergency_unlock():
-    """Emergency door unlock"""
+    """Emergency door unlock - Mở khóa khẩn cấp không cần nhận diện"""
     try:
-        # Get ESP32 IP
-        ip = get_esp_ip()
+        # Get ESP32 IP from request or config
+        data = request.get_json() if request.is_json else {}
+        ip = data.get('ip') or request.args.get('ip') or APP_CONFIG['esp32_ip']
+        
+        print(f"[Emergency Unlock] Attempting to unlock door at ESP32: {ip}")
         
         # Send unlock command to ESP32
         url = f"http://{ip}/control?var=unlock&val=1"
         response = requests.get(url, timeout=3)
         
         if response.status_code == 200:
-            # Log the emergency unlock
-            execute_query(
-                '''INSERT INTO access_logs 
-                   (device_id, status, recognized_name, source, timestamp) 
-                   VALUES (%s, %s, %s, %s, NOW())''',
-                ('DOOR-01', 'granted', 'EMERGENCY_UNLOCK', 'web_manual')
-            )
-            return success_response({'message': 'Door unlocked successfully'})
+            # KHÔNG ghi log vào database (theo yêu cầu người dùng)
+            # execute_query(...) - đã bỏ
+            
+            print(f"[Emergency Unlock] Door unlocked successfully (no log saved)")
+            return success_response({
+                'message': 'Door unlocked successfully',
+                'method': 'emergency',
+                'timestamp': time.time()
+            })
         else:
+            print(f"[Emergency Unlock] ESP32 returned status: {response.status_code}")
             return error_response('Failed to unlock door', 500)
+    except requests.exceptions.Timeout:
+        print(f"[Emergency Unlock] Timeout connecting to ESP32")
+        return error_response('ESP32 connection timeout', 500)
+    except requests.exceptions.ConnectionError:
+        print(f"[Emergency Unlock] Cannot connect to ESP32")
+        return error_response('Cannot connect to ESP32', 500)
     except Exception as e:
+        print(f"[Emergency Unlock] Error: {str(e)}")
         return error_response(f'Unlock error: {str(e)}', 500)
 
 @app.route('/api/door/status', methods=['GET'])
@@ -1010,7 +1022,15 @@ def delete_face(name):
         import shutil
         shutil.rmtree(person_path)
         
-        # Rebuild cache
+        # === THÊM ĐOẠN NÀY ===
+        # Xóa luôn file cache để ép hệ thống nhận diện lại từ đầu
+        cache_file = os.path.join(faces_dir, '.encodings_cache_v2.pkl')
+        if os.path.exists(cache_file):
+            os.unlink(cache_file)
+            print(f"[INFO] Deleted old cache file: {cache_file}")
+        # =====================
+
+        # Rebuild cache (giữ nguyên hoặc bỏ cũng được vì lần nhận diện sau sẽ tự build)
         try:
             subprocess.run(
                 [APP_CONFIG['python_bin'], 'public/tool/rebuild_cache_optimized.py'],

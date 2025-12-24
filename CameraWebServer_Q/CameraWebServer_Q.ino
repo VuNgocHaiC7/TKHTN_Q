@@ -13,9 +13,8 @@ static const char* WIFI_PASS   = "1709200004";
 static const char* BACKEND_URL = "http://10.87.241.224:5000/api/face-unlock";  
 static const char* IR_STATE_URL = "http://10.87.241.224:5000/api/ir-state";
 
-// ================== CẤU HÌNH CHÂN (ĐÃ SỬA) ==================
+// ================== CẤU HÌNH CHÂN ==================
 #define PIN_SERVO 2
-// [QUAN TRỌNG] Đổi sang chân 14 (Nối chân dương Buzzer vào đây, chân âm vào GND)
 #define PIN_BUZZER 14       
 const int PIN_LM393 = 13;   
 

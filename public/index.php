@@ -1829,6 +1829,76 @@
       height: 60px;
     }
   }
+
+  html,
+  body {
+    overflow-x: hidden !important;
+    width: 100% !important;
+    position: relative;
+  }
+
+  /* 2. Điều chỉnh CSS cho màn hình nhỏ (Mobile) */
+  @media (max-width: 768px) {
+
+    /* Reset padding body để có thêm diện tích */
+    body {
+      padding: 10px !important;
+    }
+
+    /* Fix lỗi Popup thông báo bị to quá màn hình */
+    .notification-popup {
+      min-width: 0 !important;
+      /* Hủy bỏ giới hạn 380px cũ */
+      width: 95% !important;
+      /* Chỉ chiếm 95% màn hình */
+      left: 2.5% !important;
+      /* Căn giữa */
+      right: auto !important;
+      font-size: 13px !important;
+      /* Chữ nhỏ lại xíu cho gọn */
+    }
+
+    /* Fix lỗi tên thành viên dài không xuống dòng */
+    .member {
+      white-space: normal !important;
+      /* Cho phép xuống dòng */
+      text-align: center;
+      width: 100%;
+      font-size: 11px !important;
+    }
+
+    /* Fix Header */
+    .header {
+      padding: 15px 10px !important;
+      width: 100% !important;
+    }
+
+    .header-left,
+    .header-right,
+    .header-center {
+      width: 100% !important;
+      justify-content: center !important;
+    }
+
+    /* Đảm bảo không có thẻ nào to hơn màn hình */
+    .card,
+    .container,
+    .main-content {
+      width: 100% !important;
+      max-width: 100vw !important;
+      box-sizing: border-box !important;
+    }
+
+    /* Căn chỉnh lại ô nhập IP và nút bấm */
+    .ipaddress input {
+      width: 100% !important;
+    }
+
+    .controls .grid {
+      grid-template-columns: 1fr 1fr;
+      /* Chia đôi nút cho đều */
+    }
+  }
 </style>
 
 <script>
